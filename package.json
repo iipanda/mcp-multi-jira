@@ -1,0 +1,47 @@
+{
+  "name": "mcp-multi-jira",
+  "version": "0.1.0",
+  "description": "Multi-account Jira MCP server",
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "modelcontextprotocol",
+    "jira",
+    "atlassian",
+    "confluence",
+    "multi-account",
+    "oauth",
+    "router",
+    "proxy",
+    "cli",
+    "cursor",
+    "claude",
+    "codex",
+    "stdio"
+  ],
+  "bin": {
+    "mcp-multi-jira": "dist/cli.js"
+  },
+  "module": "src/cli.ts",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "@inquirer/prompts": "^8.1.0",
+    "@modelcontextprotocol/sdk": "^1.25.1",
+    "commander": "^14.0.2",
+    "get-port": "^7.1.0",
+    "keytar": "^7.9.0",
+    "open": "^11.0.0",
+    "p-queue": "^9.0.1",
+    "zod": "^4.2.1"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.3.5",
+    "@types/node": "^25.0.3",
+    "typescript": "^5.9.3"
+  }
+}
