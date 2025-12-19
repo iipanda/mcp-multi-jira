@@ -27,7 +27,7 @@
   "scripts": {
     "build": "tsc",
     "test": "bun test",
-    "check": "ultracite check",
+    "check": "biome check . --error-on-warnings",
     "fix": "ultracite fix"
   },
   "dependencies": {
