@@ -12,6 +12,7 @@ import {
 import type { TokenStore } from "../security/token-store.js";
 import type { AccountConfig, TokenSet } from "../types.js";
 import { debug, warn } from "../utils/log.js";
+import { PACKAGE_VERSION } from "../version.js";
 import type { ToolDefinition } from "./types.js";
 
 type EventSourceInitWithHeaders = EventSourceInit & {
@@ -45,7 +46,7 @@ export class RemoteSession {
   }
 
   private createClient() {
-    return new Client({ name: "mcp-jira", version: "0.1.0" });
+    return new Client({ name: "mcp-jira", version: PACKAGE_VERSION });
   }
 
   private async loadTokens() {

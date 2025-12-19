@@ -25,8 +25,8 @@ import {
 } from "./security/token-store.js";
 import type { AccountConfig, AuthStatus, TokenStoreKind } from "./types.js";
 import { info, setLogTarget, warn } from "./utils/log.js";
+import { PACKAGE_VERSION } from "./version.js";
 
-const PACKAGE_VERSION = "0.1.0";
 const SCOPE_SPLIT_RE = /[ ,]+/;
 const RESOURCE_ARRAY_KEYS = [
   "resources",
