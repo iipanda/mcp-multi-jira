@@ -7,9 +7,11 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 env:
   BUN_VERSION: "1.3.5"
+  NPM_VERSION: "11.5.1"
 
 jobs:
   release:
@@ -25,6 +27,9 @@ jobs:
         with:
           node-version: "20.x"
           registry-url: "https://registry.npmjs.org"
+
+      - name: Update npm
+        run: npm install -g npm@${{ env.NPM_VERSION }}
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -48,5 +53,4 @@ jobs:
           -p @semantic-release/github
           semantic-release
         env:
-          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
