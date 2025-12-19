@@ -1,33 +1,38 @@
 import { loadConfig } from "../config/store.js";
-import { AccountConfig } from "../types.js";
-import { getAuthStatusForAlias, TokenStore } from "../security/tokenStore.js";
-import { RemoteSession } from "./remoteSession.js";
-import { SessionManagerLike } from "./types.js";
+import {
+  getAuthStatusForAlias,
+  type TokenStore,
+} from "../security/tokenStore.js";
+import type { AccountConfig, AuthStatus, TokenStoreKind } from "../types.js";
 import { warn } from "../utils/log.js";
-import { AuthStatus, TokenStoreKind } from "../types.js";
+import { RemoteSession } from "./remoteSession.js";
+import type { SessionManagerLike } from "./types.js";
 
 export class SessionManager implements SessionManagerLike {
-  private sessions = new Map<string, RemoteSession>();
+  private readonly sessions = new Map<string, RemoteSession>();
   private accounts = new Map<string, AccountConfig>();
 
   constructor(
-    private tokenStore: TokenStore,
-    private scopes: string[],
-    private staticClientInfo: { clientId: string; clientSecret?: string } | null,
-    private tokenStoreKind: TokenStoreKind,
+    private readonly tokenStore: TokenStore,
+    private readonly scopes: string[],
+    private readonly staticClientInfo: {
+      clientId: string;
+      clientSecret?: string;
+    } | null,
+    private readonly tokenStoreKind: TokenStoreKind
   ) {}
 
   async loadAll() {
     const config = await loadConfig();
     this.accounts = new Map(
-      Object.values(config.accounts).map((account) => [account.alias, account]),
+      Object.values(config.accounts).map((account) => [account.alias, account])
     );
     for (const account of this.accounts.values()) {
       const session = new RemoteSession(
         account,
         this.tokenStore,
         this.scopes,
-        this.staticClientInfo,
+        this.staticClientInfo
       );
       this.sessions.set(account.alias, session);
     }
@@ -43,7 +48,7 @@ export class SessionManager implements SessionManagerLike {
 
   async getAccountAuthStatus(
     alias: string,
-    options?: { allowPrompt?: boolean },
+    options?: { allowPrompt?: boolean }
   ): Promise<AuthStatus> {
     return getAuthStatusForAlias({
       alias,
@@ -62,18 +67,18 @@ export class SessionManager implements SessionManagerLike {
         });
         if (status.status !== "ok") {
           warn(
-            `[${session.account.alias}] Auth status ${status.status}. ${status.reason ?? "Run login."}`,
+            `[${session.account.alias}] Auth status ${status.status}. ${status.reason ?? "Run login."}`
           );
           return;
         }
         await session.connect();
-      }),
+      })
     );
     results.forEach((result, index) => {
       if (result.status === "rejected") {
         const session = sessions[index];
         warn(
-          `[${session.account.alias}] Failed to connect: ${String(result.reason)}`,
+          `[${session.account.alias}] Failed to connect: ${String(result.reason)}`
         );
       }
     });
@@ -81,7 +86,7 @@ export class SessionManager implements SessionManagerLike {
 
   async closeAll() {
     await Promise.all(
-      Array.from(this.sessions.values()).map((session) => session.close()),
+      Array.from(this.sessions.values()).map((session) => session.close())
     );
   }
 }

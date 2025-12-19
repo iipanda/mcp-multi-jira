@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
-import path from "node:path";
 import { promises as fs } from "node:fs";
-import { OAuthClientInformationMixed } from "@modelcontextprotocol/sdk/shared/auth.js";
+import path from "node:path";
+import type { OAuthClientInformationMixed } from "@modelcontextprotocol/sdk/shared/auth.js";
 
 import { configDir } from "../config/paths.js";
 import { atomicWrite, ensureDir } from "../utils/fs.js";
@@ -11,11 +11,16 @@ function hashServerUrl(serverUrl: string) {
 }
 
 function clientInfoPath(serverUrl: string) {
-  return path.join(configDir(), "oauth", hashServerUrl(serverUrl), "client_info.json");
+  return path.join(
+    configDir(),
+    "oauth",
+    hashServerUrl(serverUrl),
+    "client_info.json"
+  );
 }
 
 export async function readClientInfo(
-  serverUrl: string,
+  serverUrl: string
 ): Promise<OAuthClientInformationMixed | null> {
   const filePath = clientInfoPath(serverUrl);
   try {
@@ -31,7 +36,7 @@ export async function readClientInfo(
 
 export async function writeClientInfo(
   serverUrl: string,
-  info: OAuthClientInformationMixed,
+  info: OAuthClientInformationMixed
 ) {
   const filePath = clientInfoPath(serverUrl);
   await ensureDir(path.dirname(filePath));

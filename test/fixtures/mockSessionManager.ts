@@ -1,5 +1,8 @@
-import { AccountConfig } from "../../src/types.ts";
-import { SessionManagerLike, ToolDefinition } from "../../src/mcp/types.ts";
+import type {
+  SessionManagerLike,
+  ToolDefinition,
+} from "../../src/mcp/types.ts";
+import type { AccountConfig } from "../../src/types.ts";
 
 const account: AccountConfig = {
   alias: "mock",

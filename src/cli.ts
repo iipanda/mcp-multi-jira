@@ -1,30 +1,29 @@
 #!/usr/bin/env node
-import { Command } from "commander";
-import { confirm, select } from "@inquirer/prompts";
 import { existsSync } from "node:fs";
-
+import { confirm, select } from "@inquirer/prompts";
+import { Command } from "commander";
+import { runInstaller } from "./agents/install.js";
+import { plainTokenFilePath, tokenFilePath } from "./config/paths.js";
 import {
   loadConfig,
   removeAccount,
   setAccount,
   setTokenStore,
 } from "./config/store.js";
-import { plainTokenFilePath, tokenFilePath } from "./config/paths.js";
-import {
-  createTokenStore,
-  getAuthStatusForAlias,
-} from "./security/tokenStore.js";
+import { RemoteSession } from "./mcp/remoteSession.js";
+import { startLocalServer } from "./mcp/server.js";
+import { SessionManager } from "./mcp/sessionManager.js";
 import {
   DEFAULT_SCOPES,
   getStaticClientInfoFromEnv,
   loginWithDynamicOAuth,
 } from "./oauth/atlassian.js";
-import { AccountConfig, TokenStoreKind } from "./types.js";
+import {
+  createTokenStore,
+  getAuthStatusForAlias,
+} from "./security/tokenStore.js";
+import type { AccountConfig, TokenStoreKind } from "./types.js";
 import { info, setLogTarget, warn } from "./utils/log.js";
-import { SessionManager } from "./mcp/sessionManager.js";
-import { RemoteSession } from "./mcp/remoteSession.js";
-import { startLocalServer } from "./mcp/server.js";
-import { runInstaller } from "./agents/install.js";
 
 const PACKAGE_VERSION = "0.1.0";
 
@@ -169,9 +168,7 @@ function extractStructuredResult(result: any) {
         if (text.startsWith("{") || text.startsWith("[")) {
           try {
             return JSON.parse(text);
-          } catch {
-            continue;
-          }
+          } catch {}
         }
       }
     }
@@ -202,7 +199,7 @@ function normalizeResource(raw: any) {
     raw.id || raw.cloudId || raw.cloud_id || raw.resourceId || raw.resource_id;
   const url = raw.url || raw.baseUrl || raw.base_url || raw.siteUrl;
   const name = raw.name || raw.label || raw.displayName;
-  if (!cloudId || !url) {
+  if (!(cloudId && url)) {
     return null;
   }
   return {
@@ -367,10 +364,10 @@ async function handleListAccounts() {
         status.status === "ok"
           ? "ok"
           : status.status === "missing"
-          ? "needs login"
-          : status.status === "expired"
-          ? "expired"
-          : "locked";
+            ? "needs login"
+            : status.status === "expired"
+              ? "expired"
+              : "locked";
       statusMap.set(account.alias, label);
     } catch (err) {
       statusMap.set(account.alias, "unknown");
@@ -562,7 +559,7 @@ async function main() {
   program
     .command("install")
     .description("Install MCP configuration into supported agents")
-    .action(async (options) => {
+    .action(async () => {
       const config = await loadConfig();
       await runInstaller({
         tokenStore:

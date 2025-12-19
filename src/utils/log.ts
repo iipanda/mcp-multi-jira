@@ -1,6 +1,5 @@
 const debugEnabled =
-  process.env.MCP_JIRA_DEBUG === "1" ||
-  process.env.MCP_JIRA_DEBUG === "true";
+  process.env.MCP_JIRA_DEBUG === "1" || process.env.MCP_JIRA_DEBUG === "true";
 
 let logTarget: "stdout" | "stderr" =
   process.env.MCP_JIRA_LOG_STDERR === "1" ||

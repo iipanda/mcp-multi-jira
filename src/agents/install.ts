@@ -1,12 +1,11 @@
-import { checkbox, confirm, password } from "@inquirer/prompts";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import toml from "@iarna/toml";
-
+import { checkbox, confirm, password } from "@inquirer/prompts";
+import type { TokenStoreKind } from "../types.js";
 import { backupFile } from "../utils/fs.js";
 import { info, warn } from "../utils/log.js";
-import { TokenStoreKind } from "../types.js";
 
 type AgentTarget = "cursor" | "codex" | "claude";
 
@@ -93,7 +92,10 @@ function isJiraEntry(name: string, entry: unknown) {
   );
 }
 
-async function updateCursorConfig(configPath: string, env: Record<string, string>) {
+async function updateCursorConfig(
+  configPath: string,
+  env: Record<string, string>
+) {
   let config: any = { mcpServers: {} };
   let exists = false;
   try {
@@ -109,12 +111,12 @@ async function updateCursorConfig(configPath: string, env: Record<string, string
   if (exists) {
     const entries = config.mcpServers ?? {};
     const jiraKeys = Object.keys(entries).filter((key) =>
-      isJiraEntry(key, entries[key]),
+      isJiraEntry(key, entries[key])
     );
     if (jiraKeys.length > 0) {
       const remove = await confirm({
         message: `Cursor config ${configPath} contains Jira MCP entries (${jiraKeys.join(
-          ", ",
+          ", "
         )}). Remove them?`,
         default: false,
       });
@@ -142,7 +144,10 @@ async function updateCursorConfig(configPath: string, env: Record<string, string
   info(`Updated Cursor MCP config: ${configPath}`);
 }
 
-async function updateCodexConfig(configPath: string, env: Record<string, string>) {
+async function updateCodexConfig(
+  configPath: string,
+  env: Record<string, string>
+) {
   let config: any = {};
   let exists = false;
   try {
@@ -157,12 +162,12 @@ async function updateCodexConfig(configPath: string, env: Record<string, string>
 
   const servers = config.mcp_servers ?? {};
   const jiraKeys = Object.keys(servers).filter((key) =>
-    isJiraEntry(key, servers[key]),
+    isJiraEntry(key, servers[key])
   );
   if (jiraKeys.length > 0) {
     const remove = await confirm({
       message: `Codex config has Jira MCP entries (${jiraKeys.join(
-        ", ",
+        ", "
       )}). Remove them?`,
       default: false,
     });
@@ -218,12 +223,12 @@ async function updateClaudeConfig(env: Record<string, string>) {
   if (targetPath === mcpServersPath) {
     config.mcpServers = config.mcpServers ?? {};
     const jiraKeys = Object.keys(config.mcpServers).filter((key) =>
-      isJiraEntry(key, config.mcpServers[key]),
+      isJiraEntry(key, config.mcpServers[key])
     );
     if (jiraKeys.length > 0) {
       const remove = await confirm({
         message: `Claude MCP config has Jira entries (${jiraKeys.join(
-          ", ",
+          ", "
         )}). Remove them?`,
         default: false,
       });
@@ -248,12 +253,12 @@ async function updateClaudeConfig(env: Record<string, string>) {
     const project = config.projects[projectPath];
     project.mcpServers = project.mcpServers ?? {};
     const jiraKeys = Object.keys(project.mcpServers).filter((key) =>
-      isJiraEntry(key, project.mcpServers[key]),
+      isJiraEntry(key, project.mcpServers[key])
     );
     if (jiraKeys.length > 0) {
       const remove = await confirm({
         message: `Claude config for ${projectPath} has Jira entries (${jiraKeys.join(
-          ", ",
+          ", "
         )}). Remove them?`,
         default: false,
       });
@@ -337,6 +342,6 @@ export async function runInstaller(options?: {
   }
 
   info(
-    "Installation complete. Restart each agent to load the new MCP configuration.",
+    "Installation complete. Restart each agent to load the new MCP configuration."
   );
 }

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
-import { AccountConfig, ConfigFile, TokenStoreKind } from "../types.js";
-import { configDir, configFilePath } from "./paths.js";
+import type { AccountConfig, ConfigFile, TokenStoreKind } from "../types.js";
 import { atomicWrite, ensureDir } from "../utils/fs.js";
+import { configDir, configFilePath } from "./paths.js";
 
 const emptyConfig: ConfigFile = { accounts: {} };
 

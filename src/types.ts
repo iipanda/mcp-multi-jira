@@ -1,18 +1,18 @@
-export interface AccountConfig {
+export type AccountConfig = {
   alias: string;
   site: string;
   cloudId: string;
   user?: string;
   default?: boolean;
-}
+};
 
-export interface TokenSet {
+export type TokenSet = {
   accessToken: string;
   refreshToken?: string;
   expiresAt: number;
   scopes: string[];
   tokenType?: string;
-}
+};
 
 export type TokenStoreKind = "encrypted" | "plain" | "keychain";
 
@@ -21,7 +21,7 @@ export type AuthStatus = {
   reason?: string;
 };
 
-export interface ConfigFile {
+export type ConfigFile = {
   accounts: Record<string, AccountConfig>;
   tokenStore?: TokenStoreKind;
-}
+};

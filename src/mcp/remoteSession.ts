@@ -2,28 +2,27 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import PQueue from "p-queue";
-
-import { AccountConfig, TokenSet } from "../types.js";
 import {
   MCP_SERVER_URL,
   MCP_SSE_URL,
   refreshTokensIfNeeded,
-  StaticClientInfo,
+  type StaticClientInfo,
 } from "../oauth/atlassian.js";
-import { TokenStore } from "../security/tokenStore.js";
+import type { TokenStore } from "../security/tokenStore.js";
+import type { AccountConfig, TokenSet } from "../types.js";
 import { debug, warn } from "../utils/log.js";
 
 export class RemoteSession {
   private client: Client;
   private connected = false;
-  private queue: PQueue;
+  private readonly queue: PQueue;
   private tokens: TokenSet | null = null;
 
   constructor(
     public readonly account: AccountConfig,
-    private tokenStore: TokenStore,
-    private scopes: string[],
-    private staticClientInfo: StaticClientInfo | null,
+    private readonly tokenStore: TokenStore,
+    private readonly scopes: string[],
+    private readonly staticClientInfo: StaticClientInfo | null
   ) {
     this.client = this.createClient();
     this.queue = new PQueue({ concurrency: 4 });
@@ -37,7 +36,7 @@ export class RemoteSession {
     const stored = await this.tokenStore.get(this.account.alias);
     if (!stored) {
       throw new Error(
-        `No tokens found for account ${this.account.alias}. Run login first.`,
+        `No tokens found for account ${this.account.alias}. Run login first.`
       );
     }
     this.tokens = stored;
@@ -58,7 +57,7 @@ export class RemoteSession {
     if (this.tokenNeedsRefresh()) {
       if (!this.tokens?.refreshToken) {
         throw new Error(
-          `Tokens for ${this.account.alias} have expired and no refresh token is available.`,
+          `Tokens for ${this.account.alias} have expired and no refresh token is available.`
         );
       }
       const refreshed = await refreshTokensIfNeeded({
@@ -75,13 +74,16 @@ export class RemoteSession {
     if (!this.tokens) {
       throw new Error("Missing tokens");
     }
-    const transport = new StreamableHTTPClientTransport(new URL(MCP_SERVER_URL), {
-      requestInit: {
-        headers: {
-          authorization: `Bearer ${this.tokens.accessToken}`,
+    const transport = new StreamableHTTPClientTransport(
+      new URL(MCP_SERVER_URL),
+      {
+        requestInit: {
+          headers: {
+            authorization: `Bearer ${this.tokens.accessToken}`,
+          },
         },
-      },
-    });
+      }
+    );
     await this.client.connect(transport);
     this.connected = true;
   }
@@ -117,8 +119,8 @@ export class RemoteSession {
     } catch (err) {
       warn(
         `[${this.account.alias}] Streamable HTTP failed, falling back to SSE: ${String(
-          err,
-        )}`,
+          err
+        )}`
       );
       await this.connectSse();
     }

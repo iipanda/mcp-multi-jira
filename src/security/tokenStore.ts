@@ -3,14 +3,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { password as promptPassword } from "@inquirer/prompts";
 import { plainTokenFilePath, tokenFilePath } from "../config/paths.js";
-import { ensureDir, atomicWrite } from "../utils/fs.js";
-import { AuthStatus, TokenSet, TokenStoreKind } from "../types.js";
+import type { AuthStatus, TokenSet, TokenStoreKind } from "../types.js";
+import { atomicWrite, ensureDir } from "../utils/fs.js";
 
-export interface TokenStore {
+export type TokenStore = {
   get(alias: string): Promise<TokenSet | null>;
   set(alias: string, tokens: TokenSet): Promise<void>;
   remove(alias: string): Promise<void>;
-}
+};
 
 const SERVICE_NAME = "mcp-jira";
 const TOKEN_ENV = "MCP_JIRA_TOKEN_PASSWORD";
@@ -27,7 +27,7 @@ async function getMasterPassword(intent: "read" | "write") {
   }
   if (!process.stdin.isTTY) {
     throw new Error(
-      "Encrypted token store requires a password. Set MCP_JIRA_TOKEN_PASSWORD to run non-interactively.",
+      "Encrypted token store requires a password. Set MCP_JIRA_TOKEN_PASSWORD to run non-interactively."
     );
   }
   cachedPassword = await promptPassword({
@@ -40,7 +40,9 @@ async function getMasterPassword(intent: "read" | "write") {
   return cachedPassword;
 }
 
-async function loadEncryptedFile(password: string): Promise<Record<string, TokenSet>> {
+async function loadEncryptedFile(
+  password: string
+): Promise<Record<string, TokenSet>> {
   const filePath = tokenFilePath();
   try {
     const raw = await fs.readFile(filePath, "utf8");
@@ -76,7 +78,7 @@ async function loadEncryptedFile(password: string): Promise<Record<string, Token
 
 async function saveEncryptedFile(
   password: string,
-  tokens: Record<string, TokenSet>,
+  tokens: Record<string, TokenSet>
 ) {
   const salt = crypto.randomBytes(16);
   const iv = crypto.randomBytes(12);
@@ -163,13 +165,10 @@ class PlaintextTokenStore implements TokenStore {
 }
 
 class KeytarTokenStore implements TokenStore {
-  constructor(private keytar: typeof import("keytar")) {}
+  constructor(private readonly keytar: typeof import("keytar")) {}
 
   async get(alias: string) {
-    const raw = await this.keytar.getPassword(
-      SERVICE_NAME,
-      `tokens:${alias}`,
-    );
+    const raw = await this.keytar.getPassword(SERVICE_NAME, `tokens:${alias}`);
     if (!raw) {
       return null;
     }
@@ -180,7 +179,7 @@ class KeytarTokenStore implements TokenStore {
     await this.keytar.setPassword(
       SERVICE_NAME,
       `tokens:${alias}`,
-      JSON.stringify(tokens),
+      JSON.stringify(tokens)
     );
   }
 
@@ -245,7 +244,7 @@ export async function createTokenStore(options?: {
     const keytar = await loadKeytar();
     if (!keytar) {
       throw new Error(
-        "Keychain usage requested but keytar could not be loaded. Reinstall dependencies or switch token storage to plain/encrypted.",
+        "Keychain usage requested but keytar could not be loaded. Reinstall dependencies or switch token storage to plain/encrypted."
       );
     }
     return new KeytarTokenStore(keytar);

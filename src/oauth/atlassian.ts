@@ -1,26 +1,24 @@
 import crypto from "node:crypto";
 import http from "node:http";
 import { URL } from "node:url";
-import getPort from "get-port";
-import open from "open";
-
 import {
-  OAuthClientProvider,
   auth,
   discoverAuthorizationServerMetadata,
   discoverOAuthProtectedResourceMetadata,
+  type OAuthClientProvider,
   refreshAuthorization,
   selectResourceURL,
 } from "@modelcontextprotocol/sdk/client/auth.js";
-import {
+import type {
   OAuthClientInformationMixed,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
-
-import { TokenSet } from "../types.js";
-import { TokenStore } from "../security/tokenStore.js";
-import { readClientInfo, writeClientInfo } from "./clientInfoStore.js";
+import getPort from "get-port";
+import open from "open";
+import type { TokenStore } from "../security/tokenStore.js";
+import type { TokenSet } from "../types.js";
 import { debug, info, warn } from "../utils/log.js";
+import { readClientInfo, writeClientInfo } from "./clientInfoStore.js";
 
 export const DEFAULT_SCOPES = [
   "offline_access",
@@ -34,10 +32,10 @@ export const MCP_SERVER_URL =
 export const MCP_SSE_URL =
   process.env.MCP_JIRA_SSE_ENDPOINT ?? "https://mcp.atlassian.com/v1/sse";
 
-export interface StaticClientInfo {
+export type StaticClientInfo = {
   clientId: string;
   clientSecret?: string;
-}
+};
 
 export function getStaticClientInfoFromEnv(options?: {
   clientId?: string;
@@ -86,17 +84,17 @@ function toOAuthTokens(set: TokenSet): OAuthTokens {
 }
 
 export class LocalOAuthProvider implements OAuthClientProvider {
-  private stateValue = crypto.randomUUID();
+  private readonly stateValue = crypto.randomUUID();
   private codeVerifierValue?: string;
   private clientInfoCache?: OAuthClientInformationMixed | null;
   private redirectUrlValue?: string;
 
   constructor(
-    private alias: string,
-    private tokenStore: TokenStore,
-    private scopes: string[],
-    private allowRedirect: boolean,
-    private staticClientInfo: StaticClientInfo | null
+    private readonly alias: string,
+    private readonly tokenStore: TokenStore,
+    private readonly scopes: string[],
+    private readonly allowRedirect: boolean,
+    private readonly staticClientInfo: StaticClientInfo | null
   ) {}
 
   setRedirectUrl(url: string) {
@@ -155,7 +153,7 @@ export class LocalOAuthProvider implements OAuthClientProvider {
   async tokens() {
     const tokens = await this.tokenStore.get(this.alias);
     if (!tokens) {
-      return undefined;
+      return;
     }
     return toOAuthTokens(tokens);
   }
@@ -293,9 +291,8 @@ export async function refreshTokensIfNeeded(options: {
   }
   let resourceMetadata;
   try {
-    resourceMetadata = await discoverOAuthProtectedResourceMetadata(
-      MCP_SERVER_URL
-    );
+    resourceMetadata =
+      await discoverOAuthProtectedResourceMetadata(MCP_SERVER_URL);
   } catch (err) {
     debug(`Protected resource metadata lookup failed: ${String(err)}`);
   }

@@ -1,4 +1,4 @@
-import { AccountConfig, AuthStatus } from "../types.js";
+import type { AccountConfig, AuthStatus } from "../types.js";
 
 export type ToolDefinition = {
   name: string;
@@ -10,16 +10,16 @@ export type ToolDefinition = {
   };
 };
 
-export interface SessionLike {
+export type SessionLike = {
   listTools(): Promise<ToolDefinition[]>;
   callTool(name: string, args: Record<string, unknown>): Promise<any>;
-}
+};
 
-export interface SessionManagerLike {
+export type SessionManagerLike = {
   listAccounts(): AccountConfig[];
   getSession(alias: string): SessionLike | null;
   getAccountAuthStatus?: (
     alias: string,
-    options?: { allowPrompt?: boolean },
+    options?: { allowPrompt?: boolean }
   ) => Promise<AuthStatus>;
-}
+};
