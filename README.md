@@ -1,5 +1,7 @@
 # mcp-multi-jira
 
+[![CI](https://github.com/iipanda/mcp-multi-jira/actions/workflows/ci.yml/badge.svg)](https://github.com/iipanda/mcp-multi-jira/actions/workflows/ci.yml)
+
 Multi-account Jira MCP server. Configure multiple Atlassian Jira accounts and route tool calls by account alias.
 
 ## Project goals
