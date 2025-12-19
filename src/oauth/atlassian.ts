@@ -11,14 +11,16 @@ import {
 } from "@modelcontextprotocol/sdk/client/auth.js";
 import type {
   OAuthClientInformationMixed,
+  OAuthProtectedResourceMetadataSchema,
   OAuthTokens,
 } from "@modelcontextprotocol/sdk/shared/auth.js";
 import getPort from "get-port";
 import open from "open";
-import type { TokenStore } from "../security/tokenStore.js";
+import type { z } from "zod";
+import type { TokenStore } from "../security/token-store.js";
 import type { TokenSet } from "../types.js";
 import { debug, info, warn } from "../utils/log.js";
-import { readClientInfo, writeClientInfo } from "./clientInfoStore.js";
+import { readClientInfo, writeClientInfo } from "./client-info-store.js";
 
 export const DEFAULT_SCOPES = [
   "offline_access",
@@ -84,18 +86,29 @@ function toOAuthTokens(set: TokenSet): OAuthTokens {
 }
 
 export class LocalOAuthProvider implements OAuthClientProvider {
+  private readonly alias: string;
+  private readonly tokenStore: TokenStore;
+  private readonly scopes: string[];
+  private readonly allowRedirect: boolean;
+  private readonly staticClientInfo: StaticClientInfo | null;
   private readonly stateValue = crypto.randomUUID();
   private codeVerifierValue?: string;
   private clientInfoCache?: OAuthClientInformationMixed | null;
   private redirectUrlValue?: string;
 
-  constructor(
-    private readonly alias: string,
-    private readonly tokenStore: TokenStore,
-    private readonly scopes: string[],
-    private readonly allowRedirect: boolean,
-    private readonly staticClientInfo: StaticClientInfo | null
-  ) {}
+  constructor(options: {
+    alias: string;
+    tokenStore: TokenStore;
+    scopes: string[];
+    allowRedirect: boolean;
+    staticClientInfo: StaticClientInfo | null;
+  }) {
+    this.alias = options.alias;
+    this.tokenStore = options.tokenStore;
+    this.scopes = options.scopes;
+    this.allowRedirect = options.allowRedirect;
+    this.staticClientInfo = options.staticClientInfo;
+  }
 
   setRedirectUrl(url: string) {
     this.redirectUrlValue = url;
@@ -123,7 +136,7 @@ export class LocalOAuthProvider implements OAuthClientProvider {
     };
   }
 
-  async state() {
+  state() {
     return this.stateValue;
   }
 
@@ -145,9 +158,9 @@ export class LocalOAuthProvider implements OAuthClientProvider {
     return stored ?? undefined;
   }
 
-  async saveClientInformation(info: OAuthClientInformationMixed) {
-    this.clientInfoCache = info;
-    await writeClientInfo(MCP_SERVER_URL, info);
+  async saveClientInformation(clientInfo: OAuthClientInformationMixed) {
+    this.clientInfoCache = clientInfo;
+    await writeClientInfo(MCP_SERVER_URL, clientInfo);
   }
 
   async tokens() {
@@ -178,11 +191,11 @@ export class LocalOAuthProvider implements OAuthClientProvider {
     }
   }
 
-  async saveCodeVerifier(codeVerifier: string) {
+  saveCodeVerifier(codeVerifier: string) {
     this.codeVerifierValue = codeVerifier;
   }
 
-  async codeVerifier() {
+  codeVerifier() {
     if (!this.codeVerifierValue) {
       throw new Error("Missing OAuth code verifier.");
     }
@@ -194,6 +207,16 @@ export async function startCallbackServer(expectedState: string) {
   const port = await getPort({ port: 3334 });
   const redirectUri = `http://127.0.0.1:${port}/oauth/callback`;
   const server = http.createServer();
+  let closed = false;
+  const close = () =>
+    new Promise<void>((resolve) => {
+      if (closed) {
+        resolve();
+        return;
+      }
+      closed = true;
+      server.close(() => resolve());
+    });
   const codePromise = new Promise<string>((resolve, reject) => {
     server.on("request", (req, res) => {
       try {
@@ -217,7 +240,9 @@ export async function startCallbackServer(expectedState: string) {
       } catch (err) {
         reject(err);
       } finally {
-        setTimeout(() => server.close(), 100);
+        setTimeout(() => {
+          close().catch(() => undefined);
+        }, 100);
       }
     });
   });
@@ -226,7 +251,7 @@ export async function startCallbackServer(expectedState: string) {
     server.listen(port, "127.0.0.1", () => resolve());
   });
 
-  return { redirectUri, codePromise };
+  return { redirectUri, codePromise, close };
 }
 
 export async function loginWithDynamicOAuth(options: {
@@ -235,30 +260,35 @@ export async function loginWithDynamicOAuth(options: {
   scopes: string[];
   staticClientInfo: StaticClientInfo | null;
 }) {
-  const provider = new LocalOAuthProvider(
-    options.alias,
-    options.tokenStore,
-    options.scopes,
-    true,
-    options.staticClientInfo
-  );
-  const { redirectUri, codePromise } = await startCallbackServer(
+  const provider = new LocalOAuthProvider({
+    alias: options.alias,
+    tokenStore: options.tokenStore,
+    scopes: options.scopes,
+    allowRedirect: true,
+    staticClientInfo: options.staticClientInfo,
+  });
+  const { redirectUri, codePromise, close } = await startCallbackServer(
     provider.getState()
   );
-  provider.setRedirectUrl(redirectUri);
-  const result = await auth(provider, {
-    serverUrl: MCP_SERVER_URL,
-    scope: options.scopes.join(" "),
-  });
-  if (result !== "REDIRECT") {
-    return;
+  try {
+    provider.setRedirectUrl(redirectUri);
+    const result = await auth(provider, {
+      serverUrl: MCP_SERVER_URL,
+      scope: options.scopes.join(" "),
+    });
+    if (result !== "REDIRECT") {
+      await close();
+      return;
+    }
+    const code = await codePromise;
+    await auth(provider, {
+      serverUrl: MCP_SERVER_URL,
+      authorizationCode: code,
+      scope: options.scopes.join(" "),
+    });
+  } finally {
+    await close();
   }
-  const code = await codePromise;
-  await auth(provider, {
-    serverUrl: MCP_SERVER_URL,
-    authorizationCode: code,
-    scope: options.scopes.join(" "),
-  });
 }
 
 export async function refreshTokensIfNeeded(options: {
@@ -278,18 +308,21 @@ export async function refreshTokensIfNeeded(options: {
   if (!existing.refreshToken) {
     throw new Error("No refresh token available. Please login again.");
   }
-  const provider = new LocalOAuthProvider(
-    options.alias,
-    options.tokenStore,
-    options.scopes,
-    false,
-    options.staticClientInfo
-  );
+  const provider = new LocalOAuthProvider({
+    alias: options.alias,
+    tokenStore: options.tokenStore,
+    scopes: options.scopes,
+    allowRedirect: false,
+    staticClientInfo: options.staticClientInfo,
+  });
   const clientInfo = await provider.clientInformation();
   if (!clientInfo) {
     throw new Error("Missing OAuth client registration. Please login again.");
   }
-  let resourceMetadata;
+  type OAuthProtectedResourceMetadata = z.infer<
+    typeof OAuthProtectedResourceMetadataSchema
+  >;
+  let resourceMetadata: OAuthProtectedResourceMetadata | undefined;
   try {
     resourceMetadata =
       await discoverOAuthProtectedResourceMetadata(MCP_SERVER_URL);
@@ -297,7 +330,8 @@ export async function refreshTokensIfNeeded(options: {
     debug(`Protected resource metadata lookup failed: ${String(err)}`);
   }
   const authServerUrl =
-    resourceMetadata?.authorization_servers?.[0] ?? MCP_SERVER_URL;
+    resourceMetadata?.authorization_servers?.[0] ??
+    new URL("/", MCP_SERVER_URL);
   const metadata = await discoverAuthorizationServerMetadata(authServerUrl);
   const resource = await selectResourceURL(
     MCP_SERVER_URL,

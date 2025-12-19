@@ -9,7 +9,16 @@ export async function atomicWrite(filePath: string, contents: string) {
   const dir = path.dirname(filePath);
   const tempPath = path.join(dir, `.tmp-${Date.now()}-${process.pid}`);
   await fs.writeFile(tempPath, contents, "utf8");
-  await fs.rename(tempPath, filePath);
+  try {
+    await fs.rename(tempPath, filePath);
+  } catch (err) {
+    try {
+      await fs.unlink(tempPath);
+    } catch {
+      // ignore cleanup errors
+    }
+    throw err;
+  }
 }
 
 export async function backupFile(filePath: string) {

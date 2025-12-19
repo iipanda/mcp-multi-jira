@@ -12,7 +12,7 @@ export type ToolDefinition = {
 
 export type SessionLike = {
   listTools(): Promise<ToolDefinition[]>;
-  callTool(name: string, args: Record<string, unknown>): Promise<any>;
+  callTool(name: string, args: Record<string, unknown>): Promise<unknown>;
 };
 
 export type SessionManagerLike = {

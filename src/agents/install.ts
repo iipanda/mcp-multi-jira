@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import type { JsonMap } from "@iarna/toml";
 import toml from "@iarna/toml";
 import { checkbox, confirm, password } from "@inquirer/prompts";
 import type { TokenStoreKind } from "../types.js";
@@ -10,6 +11,33 @@ import { info, warn } from "../utils/log.js";
 type AgentTarget = "cursor" | "codex" | "claude";
 
 const MCP_SERVER_NAME = "mcp-jira";
+type JsonRecord = JsonMap;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object";
+}
+
+function ensureRecord(value: unknown): JsonRecord {
+  return isRecord(value) ? value : {};
+}
+
+function getOrCreateRecord(container: JsonRecord, key: string): JsonRecord {
+  const current = container[key];
+  if (isRecord(current)) {
+    return current;
+  }
+  const next: JsonRecord = {};
+  container[key] = next;
+  return next;
+}
+
+function createMcpServerEntry(env: Record<string, string>): JsonRecord {
+  return {
+    command: "npx",
+    args: ["-y", "mcp-multi-jira", "serve"],
+    ...(Object.keys(env).length > 0 ? { env } : {}),
+  };
+}
 
 function resolveEnvDefaults() {
   return {
@@ -92,15 +120,69 @@ function isJiraEntry(name: string, entry: unknown) {
   );
 }
 
+async function removeJiraEntries(
+  entries: JsonRecord,
+  message: string,
+  configPath: string
+) {
+  const jiraKeys = Object.keys(entries).filter((key) =>
+    isJiraEntry(key, entries[key])
+  );
+  if (jiraKeys.length === 0) {
+    return true;
+  }
+  const remove = await confirm({
+    message: `${message} (${jiraKeys.join(", ")}). Remove them?`,
+    default: false,
+  });
+  if (!remove) {
+    warn(`Skipping config update for ${configPath}.`);
+    return false;
+  }
+  await backupFile(configPath);
+  for (const key of jiraKeys) {
+    delete entries[key];
+  }
+  return true;
+}
+
+async function readJsonConfig(filePath: string) {
+  try {
+    const raw = await fs.readFile(filePath, "utf8");
+    return { config: ensureRecord(JSON.parse(raw)), exists: true };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return { config: {}, exists: false };
+    }
+    throw err;
+  }
+}
+
+async function loadClaudeConfig() {
+  const home = os.homedir();
+  const mcpServersPath = path.join(home, ".claude", "mcp_servers.json");
+  const globalConfigPath = path.join(home, ".claude.json");
+  const mcpFile = await readJsonConfig(mcpServersPath);
+  if (mcpFile.exists) {
+    return { config: mcpFile.config, targetPath: mcpServersPath, mode: "mcp" };
+  }
+  const globalFile = await readJsonConfig(globalConfigPath);
+  return {
+    config: globalFile.config,
+    targetPath: globalConfigPath,
+    mode: "project",
+  };
+}
+
 async function updateCursorConfig(
   configPath: string,
   env: Record<string, string>
 ) {
-  let config: any = { mcpServers: {} };
+  let config: JsonRecord = { mcpServers: {} };
   let exists = false;
   try {
     const raw = await fs.readFile(configPath, "utf8");
-    config = JSON.parse(raw);
+    config = ensureRecord(JSON.parse(raw));
     exists = true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -108,36 +190,19 @@ async function updateCursorConfig(
     }
   }
 
+  const mcpServers = getOrCreateRecord(config, "mcpServers");
   if (exists) {
-    const entries = config.mcpServers ?? {};
-    const jiraKeys = Object.keys(entries).filter((key) =>
-      isJiraEntry(key, entries[key])
+    const shouldContinue = await removeJiraEntries(
+      mcpServers,
+      `Cursor config ${configPath} contains Jira MCP entries`,
+      configPath
     );
-    if (jiraKeys.length > 0) {
-      const remove = await confirm({
-        message: `Cursor config ${configPath} contains Jira MCP entries (${jiraKeys.join(
-          ", "
-        )}). Remove them?`,
-        default: false,
-      });
-      if (!remove) {
-        warn(`Skipping Cursor config update for ${configPath}.`);
-        return;
-      }
-      await backupFile(configPath);
-      for (const key of jiraKeys) {
-        delete entries[key];
-      }
+    if (!shouldContinue) {
+      return;
     }
-    config.mcpServers = entries;
   }
 
-  config.mcpServers = config.mcpServers ?? {};
-  config.mcpServers[MCP_SERVER_NAME] = {
-    command: "npx",
-    args: ["-y", "mcp-multi-jira", "serve"],
-    ...(Object.keys(env).length > 0 ? { env } : {}),
-  };
+  mcpServers[MCP_SERVER_NAME] = createMcpServerEntry(env);
 
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), "utf8");
@@ -148,11 +213,11 @@ async function updateCodexConfig(
   configPath: string,
   env: Record<string, string>
 ) {
-  let config: any = {};
+  let config: JsonRecord = {};
   let exists = false;
   try {
     const raw = await fs.readFile(configPath, "utf8");
-    config = toml.parse(raw);
+    config = ensureRecord(toml.parse(raw));
     exists = true;
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
@@ -160,124 +225,73 @@ async function updateCodexConfig(
     }
   }
 
-  const servers = config.mcp_servers ?? {};
-  const jiraKeys = Object.keys(servers).filter((key) =>
-    isJiraEntry(key, servers[key])
-  );
-  if (jiraKeys.length > 0) {
-    const remove = await confirm({
-      message: `Codex config has Jira MCP entries (${jiraKeys.join(
-        ", "
-      )}). Remove them?`,
-      default: false,
-    });
-    if (!remove) {
-      warn("Skipping Codex config update.");
+  const servers = getOrCreateRecord(config, "mcp_servers");
+  if (exists) {
+    const shouldContinue = await removeJiraEntries(
+      servers,
+      "Codex config has Jira MCP entries",
+      configPath
+    );
+    if (!shouldContinue) {
       return;
-    }
-    if (exists) {
-      await backupFile(configPath);
-    }
-    for (const key of jiraKeys) {
-      delete servers[key];
     }
   }
 
-  servers[MCP_SERVER_NAME.replace(/-/g, "_")] = {
-    command: "npx",
-    args: ["-y", "mcp-multi-jira", "serve"],
-    ...(Object.keys(env).length > 0 ? { env } : {}),
-  };
+  servers[MCP_SERVER_NAME.replace(/-/g, "_")] = createMcpServerEntry(env);
   config.mcp_servers = servers;
   await fs.mkdir(path.dirname(configPath), { recursive: true });
   await fs.writeFile(configPath, toml.stringify(config), "utf8");
   info(`Updated Codex MCP config: ${configPath}`);
 }
 
+async function updateClaudeMcpServers(
+  config: JsonRecord,
+  targetPath: string,
+  env: Record<string, string>
+) {
+  const mcpServers = getOrCreateRecord(config, "mcpServers");
+  const shouldContinue = await removeJiraEntries(
+    mcpServers,
+    "Claude MCP config has Jira entries",
+    targetPath
+  );
+  if (!shouldContinue) {
+    return false;
+  }
+  mcpServers[MCP_SERVER_NAME] = createMcpServerEntry(env);
+  return true;
+}
+
+async function updateClaudeProjectConfig(
+  config: JsonRecord,
+  targetPath: string,
+  env: Record<string, string>
+) {
+  const projectPath = process.cwd();
+  const projects = getOrCreateRecord(config, "projects");
+  const project = getOrCreateRecord(projects, projectPath);
+  const mcpServers = getOrCreateRecord(project, "mcpServers");
+  const shouldContinue = await removeJiraEntries(
+    mcpServers,
+    `Claude config for ${projectPath} has Jira entries`,
+    targetPath
+  );
+  if (!shouldContinue) {
+    return false;
+  }
+  mcpServers[MCP_SERVER_NAME] = createMcpServerEntry(env);
+  return true;
+}
+
 async function updateClaudeConfig(env: Record<string, string>) {
-  const home = os.homedir();
-  const mcpServersPath = path.join(home, ".claude", "mcp_servers.json");
-  const globalConfigPath = path.join(home, ".claude.json");
-  let targetPath = mcpServersPath;
-  let config: any = { mcpServers: {} };
-
-  try {
-    const raw = await fs.readFile(mcpServersPath, "utf8");
-    config = JSON.parse(raw);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw err;
-    }
-    targetPath = globalConfigPath;
-    try {
-      const raw = await fs.readFile(globalConfigPath, "utf8");
-      config = JSON.parse(raw);
-    } catch (innerErr) {
-      if ((innerErr as NodeJS.ErrnoException).code !== "ENOENT") {
-        throw innerErr;
-      }
-      config = {};
-    }
+  const { config, targetPath, mode } = await loadClaudeConfig();
+  const updated =
+    mode === "mcp"
+      ? await updateClaudeMcpServers(config, targetPath, env)
+      : await updateClaudeProjectConfig(config, targetPath, env);
+  if (!updated) {
+    return;
   }
-
-  if (targetPath === mcpServersPath) {
-    config.mcpServers = config.mcpServers ?? {};
-    const jiraKeys = Object.keys(config.mcpServers).filter((key) =>
-      isJiraEntry(key, config.mcpServers[key])
-    );
-    if (jiraKeys.length > 0) {
-      const remove = await confirm({
-        message: `Claude MCP config has Jira entries (${jiraKeys.join(
-          ", "
-        )}). Remove them?`,
-        default: false,
-      });
-      if (!remove) {
-        warn("Skipping Claude config update.");
-        return;
-      }
-      await backupFile(targetPath);
-      for (const key of jiraKeys) {
-        delete config.mcpServers[key];
-      }
-    }
-    config.mcpServers[MCP_SERVER_NAME] = {
-      command: "npx",
-      args: ["-y", "mcp-multi-jira", "serve"],
-      ...(Object.keys(env).length > 0 ? { env } : {}),
-    };
-  } else {
-    const projectPath = process.cwd();
-    config.projects = config.projects ?? {};
-    config.projects[projectPath] = config.projects[projectPath] ?? {};
-    const project = config.projects[projectPath];
-    project.mcpServers = project.mcpServers ?? {};
-    const jiraKeys = Object.keys(project.mcpServers).filter((key) =>
-      isJiraEntry(key, project.mcpServers[key])
-    );
-    if (jiraKeys.length > 0) {
-      const remove = await confirm({
-        message: `Claude config for ${projectPath} has Jira entries (${jiraKeys.join(
-          ", "
-        )}). Remove them?`,
-        default: false,
-      });
-      if (!remove) {
-        warn("Skipping Claude config update.");
-        return;
-      }
-      await backupFile(targetPath);
-      for (const key of jiraKeys) {
-        delete project.mcpServers[key];
-      }
-    }
-    project.mcpServers[MCP_SERVER_NAME] = {
-      command: "npx",
-      args: ["-y", "mcp-multi-jira", "serve"],
-      ...(Object.keys(env).length > 0 ? { env } : {}),
-    };
-  }
-
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
   await fs.writeFile(targetPath, JSON.stringify(config, null, 2), "utf8");
   info(`Updated Claude MCP config: ${targetPath}`);

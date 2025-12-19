@@ -2,25 +2,37 @@ import { loadConfig } from "../config/store.js";
 import {
   getAuthStatusForAlias,
   type TokenStore,
-} from "../security/tokenStore.js";
+} from "../security/token-store.js";
 import type { AccountConfig, AuthStatus, TokenStoreKind } from "../types.js";
 import { warn } from "../utils/log.js";
-import { RemoteSession } from "./remoteSession.js";
+import { RemoteSession } from "./remote-session.js";
 import type { SessionManagerLike } from "./types.js";
 
 export class SessionManager implements SessionManagerLike {
+  private readonly tokenStore: TokenStore;
+  private readonly scopes: string[];
+  private readonly staticClientInfo: {
+    clientId: string;
+    clientSecret?: string;
+  } | null;
+  private readonly tokenStoreKind: TokenStoreKind;
   private readonly sessions = new Map<string, RemoteSession>();
   private accounts = new Map<string, AccountConfig>();
 
   constructor(
-    private readonly tokenStore: TokenStore,
-    private readonly scopes: string[],
-    private readonly staticClientInfo: {
+    tokenStore: TokenStore,
+    scopes: string[],
+    staticClientInfo: {
       clientId: string;
       clientSecret?: string;
     } | null,
-    private readonly tokenStoreKind: TokenStoreKind
-  ) {}
+    tokenStoreKind: TokenStoreKind
+  ) {
+    this.tokenStore = tokenStore;
+    this.scopes = scopes;
+    this.staticClientInfo = staticClientInfo;
+    this.tokenStoreKind = tokenStoreKind;
+  }
 
   async loadAll() {
     const config = await loadConfig();
@@ -46,7 +58,7 @@ export class SessionManager implements SessionManagerLike {
     return this.sessions.get(alias) ?? null;
   }
 
-  async getAccountAuthStatus(
+  getAccountAuthStatus(
     alias: string,
     options?: { allowPrompt?: boolean }
   ): Promise<AuthStatus> {

@@ -51,6 +51,6 @@ test("stdio MCP server accepts connection and routes tool calls", async () => {
       expect(payload.hello).toBe("world");
     }
   } finally {
-    await client.close().catch(() => {});
+    await client.close().catch(() => undefined);
   }
 });

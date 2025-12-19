@@ -10,9 +10,10 @@ import {
   setAccount,
   setTokenStore,
 } from "./config/store.js";
-import { RemoteSession } from "./mcp/remoteSession.js";
+import { RemoteSession } from "./mcp/remote-session.js";
 import { startLocalServer } from "./mcp/server.js";
-import { SessionManager } from "./mcp/sessionManager.js";
+import { SessionManager } from "./mcp/session-manager.js";
+import type { ToolDefinition } from "./mcp/types.js";
 import {
   DEFAULT_SCOPES,
   getStaticClientInfoFromEnv,
@@ -21,18 +22,30 @@ import {
 import {
   createTokenStore,
   getAuthStatusForAlias,
-} from "./security/tokenStore.js";
-import type { AccountConfig, TokenStoreKind } from "./types.js";
+} from "./security/token-store.js";
+import type { AccountConfig, AuthStatus, TokenStoreKind } from "./types.js";
 import { info, setLogTarget, warn } from "./utils/log.js";
 
 const PACKAGE_VERSION = "0.1.0";
+const SCOPE_SPLIT_RE = /[ ,]+/;
+const RESOURCE_ARRAY_KEYS = [
+  "resources",
+  "values",
+  "items",
+  "sites",
+  "data",
+] as const;
+
+type JsonRecord = Record<string, unknown>;
+type ResourceInfo = { id: string; url: string; name: string };
+type TextContentItem = { type: string; text: string };
 
 function parseScopes(scopes?: string) {
   if (!scopes) {
     return DEFAULT_SCOPES;
   }
   return scopes
-    .split(/[ ,]+/)
+    .split(SCOPE_SPLIT_RE)
     .map((scope) => scope.trim())
     .filter(Boolean);
 }
@@ -151,62 +164,226 @@ function formatAccounts(
   ].join("\n");
 }
 
-function extractStructuredResult(result: any) {
-  if (!result || typeof result !== "object") {
-    return null;
+function formatAuthStatus(status: AuthStatus): string {
+  switch (status.status) {
+    case "ok":
+      return "ok";
+    case "missing":
+      return "needs login";
+    case "expired":
+      return "expired";
+    case "locked":
+      return "locked";
+    default:
+      return "unknown";
   }
+}
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object";
+}
+
+function extractStructuredContent(result: JsonRecord): unknown | null {
   if ("structuredContent" in result && result.structuredContent) {
     return result.structuredContent;
   }
+  return null;
+}
+
+function extractToolResult(result: JsonRecord): unknown | null {
   if ("toolResult" in result) {
     return result.toolResult;
   }
-  if ("content" in result && Array.isArray(result.content)) {
-    for (const item of result.content) {
-      if (item?.type === "text" && typeof item.text === "string") {
-        const text = item.text.trim();
-        if (text.startsWith("{") || text.startsWith("[")) {
-          try {
-            return JSON.parse(text);
-          } catch {}
-        }
-      }
+  return null;
+}
+
+function extractTextItems(result: JsonRecord): TextContentItem[] {
+  const raw = result.content;
+  if (!Array.isArray(raw)) {
+    return [];
+  }
+  const items: TextContentItem[] = [];
+  for (const entry of raw) {
+    if (!isRecord(entry)) {
+      continue;
+    }
+    const type = typeof entry.type === "string" ? entry.type : "";
+    const text = typeof entry.text === "string" ? entry.text : "";
+    if (type === "text" && text) {
+      items.push({ type, text });
+    }
+  }
+  return items;
+}
+
+function parseJsonPayload(text: string): unknown | null {
+  const trimmed = text.trim();
+  if (!(trimmed.startsWith("{") || trimmed.startsWith("["))) {
+    return null;
+  }
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+}
+
+function extractStructuredResult(result: unknown): unknown | null {
+  if (!isRecord(result)) {
+    return null;
+  }
+  const structured = extractStructuredContent(result);
+  if (structured) {
+    return structured;
+  }
+  const toolResult = extractToolResult(result);
+  if (toolResult) {
+    return toolResult;
+  }
+  for (const item of extractTextItems(result)) {
+    const parsed = parseJsonPayload(item.text);
+    if (parsed !== null) {
+      return parsed;
     }
   }
   return null;
 }
 
-function pickResourceArray(payload: any): any[] | null {
+function pickResourceArray(payload: unknown): unknown[] | null {
   if (Array.isArray(payload)) {
     return payload;
   }
-  if (!payload || typeof payload !== "object") {
+  if (!isRecord(payload)) {
     return null;
   }
-  for (const key of ["resources", "values", "items", "sites", "data"]) {
-    if (Array.isArray(payload[key])) {
-      return payload[key];
+  for (const key of RESOURCE_ARRAY_KEYS) {
+    const value = payload[key];
+    if (Array.isArray(value)) {
+      return value;
     }
   }
   return null;
 }
 
-function normalizeResource(raw: any) {
-  if (!raw || typeof raw !== "object") {
+function toStringValue(value: unknown): string | null {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return String(value);
+  }
+  return null;
+}
+
+function normalizeResource(raw: unknown): ResourceInfo | null {
+  if (!isRecord(raw)) {
     return null;
   }
   const cloudId =
-    raw.id || raw.cloudId || raw.cloud_id || raw.resourceId || raw.resource_id;
-  const url = raw.url || raw.baseUrl || raw.base_url || raw.siteUrl;
-  const name = raw.name || raw.label || raw.displayName;
+    toStringValue(raw.id) ??
+    toStringValue(raw.cloudId) ??
+    toStringValue(raw.cloud_id) ??
+    toStringValue(raw.resourceId) ??
+    toStringValue(raw.resource_id);
+  const url =
+    toStringValue(raw.url) ??
+    toStringValue(raw.baseUrl) ??
+    toStringValue(raw.base_url) ??
+    toStringValue(raw.siteUrl);
+  const name =
+    toStringValue(raw.name) ??
+    toStringValue(raw.label) ??
+    toStringValue(raw.displayName);
   if (!(cloudId && url)) {
     return null;
   }
   return {
-    id: String(cloudId),
-    url: String(url),
-    name: name ? String(name) : String(url),
+    id: cloudId,
+    url,
+    name: name ?? url,
   };
+}
+
+function dedupeResources(resources: ResourceInfo[]): ResourceInfo[] {
+  const unique = new Map<string, ResourceInfo>();
+  for (const item of resources) {
+    const key = `${item.id}|${item.url}`;
+    if (!unique.has(key)) {
+      unique.set(key, item);
+    }
+  }
+  return Array.from(unique.values());
+}
+
+function toolNameSet(tools: ToolDefinition[]) {
+  return new Set(tools.map((tool) => tool.name));
+}
+
+async function fetchAccessibleResources(
+  session: RemoteSession,
+  toolNames: Set<string>
+): Promise<ResourceInfo[]> {
+  if (!toolNames.has("getAccessibleAtlassianResources")) {
+    warn(
+      "MCP tool getAccessibleAtlassianResources not available. Storing account without site metadata."
+    );
+    return [];
+  }
+  const result = await session.callTool("getAccessibleAtlassianResources", {});
+  const payload = extractStructuredResult(result);
+  const resources = pickResourceArray(payload) ?? [];
+  const normalized = resources
+    .map(normalizeResource)
+    .filter((item): item is ResourceInfo => Boolean(item));
+  return dedupeResources(normalized);
+}
+
+async function selectResource(
+  resources: ResourceInfo[]
+): Promise<ResourceInfo | null> {
+  if (resources.length === 0) {
+    return null;
+  }
+  if (resources.length === 1) {
+    return resources[0];
+  }
+  const selected = await select({
+    message: "Select the Jira site to link:",
+    choices: resources.map((item) => ({
+      name: `${item.name} (${item.url})`,
+      value: item.id,
+    })),
+  });
+  return resources.find((item) => item.id === selected) ?? resources[0];
+}
+
+function extractUserEmail(payload: unknown): string | undefined {
+  if (!isRecord(payload)) {
+    return;
+  }
+  return (
+    toStringValue(payload.email) ??
+    toStringValue(payload.emailAddress) ??
+    toStringValue(payload.userEmail) ??
+    toStringValue(payload.username) ??
+    undefined
+  );
+}
+
+async function fetchUserEmail(
+  session: RemoteSession,
+  toolNames: Set<string>
+): Promise<string | undefined> {
+  if (!toolNames.has("atlassianUserInfo")) {
+    return;
+  }
+  try {
+    const result = await session.callTool("atlassianUserInfo", {});
+    const payload = extractStructuredResult(result);
+    return extractUserEmail(payload);
+  } catch {
+    return;
+  }
 }
 
 async function handleLogin(
@@ -258,73 +435,17 @@ async function handleLogin(
     scopes,
     staticClientInfo
   );
-  let resource: { id: string; url: string; name: string } | null = null;
+  let resource: ResourceInfo | null = null;
   let user: string | undefined;
   try {
     const tools = await session.listTools();
-    const hasResources = tools.some(
-      (tool) => tool.name === "getAccessibleAtlassianResources"
-    );
-    if (hasResources) {
-      const result = await session.callTool(
-        "getAccessibleAtlassianResources",
-        {}
-      );
-      const payload = extractStructuredResult(result);
-      const resources = pickResourceArray(payload) ?? [];
-      const normalized = resources
-        .map(normalizeResource)
-        .filter((item): item is { id: string; url: string; name: string } =>
-          Boolean(item)
-        );
-      const unique = new Map<
-        string,
-        { id: string; url: string; name: string }
-      >();
-      for (const item of normalized) {
-        const key = `${item.id}|${item.url}`;
-        if (!unique.has(key)) {
-          unique.set(key, item);
-        }
-      }
-      const deduped = Array.from(unique.values());
-      if (deduped.length === 0) {
-        warn("No accessible Jira resources found via MCP.");
-      } else {
-        resource = deduped[0];
-        if (deduped.length > 1) {
-          const selected = await select({
-            message: "Select the Jira site to link:",
-            choices: deduped.map((item) => ({
-              name: `${item.name} (${item.url})`,
-              value: item.id,
-            })),
-          });
-          resource = deduped.find((item) => item.id === selected) ?? resource;
-        }
-      }
-    } else {
-      warn(
-        "MCP tool getAccessibleAtlassianResources not available. Storing account without site metadata."
-      );
+    const toolNames = toolNameSet(tools);
+    const resources = await fetchAccessibleResources(session, toolNames);
+    if (resources.length === 0) {
+      warn("No accessible Jira resources found via MCP.");
     }
-
-    const hasUserInfo = tools.some((tool) => tool.name === "atlassianUserInfo");
-    if (hasUserInfo) {
-      try {
-        const result = await session.callTool("atlassianUserInfo", {});
-        const payload = extractStructuredResult(result);
-        if (payload && typeof payload === "object") {
-          user =
-            payload.email ||
-            payload.emailAddress ||
-            payload.userEmail ||
-            payload.username;
-        }
-      } catch {
-        user = undefined;
-      }
-    }
+    resource = await selectResource(resources);
+    user = await fetchUserEmail(session, toolNames);
   } finally {
     await session.close();
   }
@@ -360,15 +481,7 @@ async function handleListAccounts() {
         storeKind,
         allowPrompt: process.stdin.isTTY,
       });
-      const label =
-        status.status === "ok"
-          ? "ok"
-          : status.status === "missing"
-            ? "needs login"
-            : status.status === "expired"
-              ? "expired"
-              : "locked";
-      statusMap.set(account.alias, label);
+      statusMap.set(account.alias, formatAuthStatus(status));
     } catch (err) {
       statusMap.set(account.alias, "unknown");
       warn(
@@ -428,84 +541,99 @@ async function handleServe(options: {
   await startLocalServer(manager, PACKAGE_VERSION);
 }
 
-async function handleTokenStore(storeValue?: string) {
-  const normalized = normalizeTokenStore(storeValue);
-  if (!storeValue) {
-    const config = await loadConfig();
-    const envOverride = normalizeTokenStore(process.env.MCP_JIRA_TOKEN_STORE);
-    const effective = resolveTokenStoreFromConfig(config);
-    if (envOverride && envOverride !== config.tokenStore) {
-      warn(
-        `MCP_JIRA_TOKEN_STORE is set to ${envOverride}. This overrides the configured default (${
-          config.tokenStore ?? "plain"
-        }).`
-      );
-    }
-    info(`Current token store: ${effective}.`);
-    info("Available token stores: encrypted, plain, keychain.");
-    info("Set with: mcp-multi-jira token-store <store>");
+function warnTokenStoreOverride(config: { tokenStore?: TokenStoreKind }) {
+  const envOverride = normalizeTokenStore(process.env.MCP_JIRA_TOKEN_STORE);
+  if (envOverride && envOverride !== config.tokenStore) {
+    warn(
+      `MCP_JIRA_TOKEN_STORE is set to ${envOverride}. This overrides the configured default (${config.tokenStore ?? "plain"}).`
+    );
+  }
+}
+
+async function showTokenStoreStatus() {
+  const config = await loadConfig();
+  warnTokenStoreOverride(config);
+  const effective = resolveTokenStoreFromConfig(config);
+  info(`Current token store: ${effective}.`);
+  info("Available token stores: encrypted, plain, keychain.");
+  info("Set with: mcp-multi-jira token-store <store>");
+}
+
+async function migrateTokenStoreIfConfirmed(
+  fromStore: TokenStoreKind,
+  toStore: TokenStoreKind,
+  aliases: string[]
+) {
+  if (aliases.length === 0) {
+    return false;
+  }
+  if (!process.stdin.isTTY) {
+    warn(
+      "Accounts exist but no TTY available to prompt for migration. Tokens will remain in the previous store."
+    );
+    return false;
+  }
+  const shouldMigrate = await confirm({
+    message: `Migrate ${aliases.length} account token(s) from ${describeTokenStore(
+      fromStore
+    )} to ${describeTokenStore(toStore)}? This will move tokens to the new backend.`,
+    default: true,
+  });
+  if (!shouldMigrate) {
+    return false;
+  }
+  const result = await migrateTokenStore({
+    from: fromStore,
+    to: toStore,
+    aliases,
+  });
+  info(`Migrated ${result.migrated} account(s) to ${toStore}.`);
+  if (result.alreadyPresent > 0) {
+    info(
+      `${result.alreadyPresent} account(s) already had tokens in ${toStore}.`
+    );
+  }
+  if (result.missing > 0) {
+    warn(`${result.missing} account(s) had no tokens in the previous store.`);
+  }
+  return true;
+}
+
+async function setTokenStoreWithMigration(store: TokenStoreKind) {
+  const config = await loadConfig();
+  warnTokenStoreOverride(config);
+  const currentStore = config.tokenStore ?? "plain";
+  if (currentStore === store) {
+    info(`Token store already set to ${store}.`);
     return;
   }
+  const aliases = Object.keys(config.accounts);
+  const migrated = await migrateTokenStoreIfConfirmed(
+    currentStore,
+    store,
+    aliases
+  );
+  await setTokenStore(store);
+  info(`Default token store set to ${store}.`);
+  if (!migrated && aliases.length > 0) {
+    warn(
+      "Tokens remain in the previous store. Run the token-store command again to migrate, or re-login."
+    );
+  }
+}
+
+async function handleTokenStore(storeValue?: string) {
+  if (!storeValue) {
+    await showTokenStoreStatus();
+    return;
+  }
+  const normalized = normalizeTokenStore(storeValue);
   if (!normalized) {
     throw new Error(
       "Invalid token store. Use one of: encrypted, plain, keychain."
     );
   }
-  const config = await loadConfig();
-  const envOverride = normalizeTokenStore(process.env.MCP_JIRA_TOKEN_STORE);
-  if (envOverride && envOverride !== config.tokenStore) {
-    warn(
-      `MCP_JIRA_TOKEN_STORE is set to ${envOverride}. This overrides the configured default (${
-        config.tokenStore ?? "plain"
-      }).`
-    );
-  }
-  const currentStore = config.tokenStore ?? "plain";
-  if (currentStore === normalized) {
-    info(`Token store already set to ${normalized}.`);
-    return;
-  }
-  const aliases = Object.keys(config.accounts);
-  let shouldMigrate = false;
-  if (aliases.length > 0 && process.stdin.isTTY) {
-    shouldMigrate = await confirm({
-      message: `Migrate ${
-        aliases.length
-      } account token(s) from ${describeTokenStore(
-        currentStore
-      )} to ${describeTokenStore(
-        normalized
-      )}? This will move tokens to the new backend.`,
-      default: true,
-    });
-  } else if (aliases.length > 0) {
-    warn(
-      "Accounts exist but no TTY available to prompt for migration. Tokens will remain in the previous store."
-    );
-  }
-  if (shouldMigrate) {
-    const result = await migrateTokenStore({
-      from: currentStore,
-      to: normalized,
-      aliases,
-    });
-    info(`Migrated ${result.migrated} account(s) to ${normalized}.`);
-    if (result.alreadyPresent > 0) {
-      info(
-        `${result.alreadyPresent} account(s) already had tokens in ${normalized}.`
-      );
-    }
-    if (result.missing > 0) {
-      warn(`${result.missing} account(s) had no tokens in the previous store.`);
-    }
-  }
-  await setTokenStore(normalized);
-  info(`Default token store set to ${normalized}.`);
-  if (!shouldMigrate && aliases.length > 0) {
-    warn(
-      "Tokens remain in the previous store. Run the token-store command again to migrate, or re-login."
-    );
-  }
+  await setTokenStoreWithMigration(normalized);
 }
 
 async function main() {

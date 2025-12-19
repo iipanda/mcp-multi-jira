@@ -38,11 +38,11 @@ const tools: ToolDefinition[] = [
 ];
 
 const session = {
-  async listTools() {
-    return tools;
+  listTools() {
+    return Promise.resolve(tools);
   },
-  async callTool(_name: string, args: Record<string, unknown>) {
-    return {
+  callTool(_name: string, args: Record<string, unknown>) {
+    return Promise.resolve({
       content: [
         {
           type: "text",
@@ -50,7 +50,7 @@ const session = {
         },
       ],
       structuredContent: args,
-    };
+    });
   },
 };
 
@@ -65,8 +65,8 @@ export function createMockSessionManager(): SessionManagerLike {
       }
       return null;
     },
-    async getAccountAuthStatus() {
-      return { status: "ok" };
+    getAccountAuthStatus() {
+      return Promise.resolve({ status: "ok" });
     },
   };
 }

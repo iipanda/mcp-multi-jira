@@ -1,33 +1,46 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import { info, warn } from "../utils/log.js";
 import type { SessionManagerLike } from "./types.js";
 
-function toolError(message: string) {
+function toolError(message: string): CallToolResult {
   return {
     content: [{ type: "text" as const, text: message }],
     isError: true,
   };
 }
 
-function sanitizeInputSchema(
-  inputSchema:
-    | {
-        type?: string;
-        properties?: Record<string, object>;
-        required?: string[];
-      }
-    | undefined
-) {
+type ToolInputSchema = {
+  type?: string;
+  properties?: Record<string, object>;
+  required?: string[];
+};
+
+type ToolConfig = {
+  description?: string;
+  inputSchema?: ToolInputSchema;
+};
+
+type AccountAuthStatus = { status: string; reason?: string };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object";
+}
+
+function isToolResult(value: unknown): value is CallToolResult {
+  return isRecord(value) && Array.isArray(value.content);
+}
+
+function sanitizeInputSchema(inputSchema: ToolInputSchema | undefined) {
   if (!inputSchema || typeof inputSchema !== "object") {
     return inputSchema;
   }
   const baseSchema = { ...inputSchema };
   if (baseSchema.properties && typeof baseSchema.properties === "object") {
-    const properties = { ...baseSchema.properties };
-    properties.cloudId = undefined;
-    baseSchema.properties = properties;
+    const { cloudId: _cloudId, ...rest } = baseSchema.properties;
+    baseSchema.properties = rest;
   }
   if (Array.isArray(baseSchema.required)) {
     baseSchema.required = baseSchema.required.filter(
@@ -62,15 +75,7 @@ function getObjectShape(schema: unknown) {
   return null;
 }
 
-function buildToolSchema(
-  inputSchema:
-    | {
-        type?: string;
-        properties?: Record<string, object>;
-        required?: string[];
-      }
-    | undefined
-) {
+function buildToolSchema(inputSchema: ToolInputSchema | undefined) {
   const accountField = z
     .string()
     .describe("Account alias to route this call to.");
@@ -101,19 +106,22 @@ function buildToolSchema(
   }
 }
 
-function normalizeToolResult(result: any) {
-  if (result && typeof result === "object" && "content" in result) {
+function normalizeToolResult(result: unknown): CallToolResult {
+  if (isToolResult(result)) {
     return result;
   }
-  if (result && typeof result === "object" && "toolResult" in result) {
+  if (isRecord(result) && "toolResult" in result) {
+    const structuredContent = isRecord(result.toolResult)
+      ? result.toolResult
+      : undefined;
     return {
       content: [
         {
           type: "text" as const,
-          text: JSON.stringify((result as { toolResult: unknown }).toolResult),
+          text: JSON.stringify(result.toolResult),
         },
       ],
-      structuredContent: (result as { toolResult: unknown }).toolResult,
+      ...(structuredContent ? { structuredContent } : {}),
     };
   }
   return {
@@ -123,6 +131,159 @@ function normalizeToolResult(result: any) {
         text: JSON.stringify(result),
       },
     ],
+  };
+}
+
+async function buildAccountStatusMap(
+  sessionManager: SessionManagerLike,
+  accounts: Array<{ alias: string }>
+) {
+  const statusMap = new Map<string, AccountAuthStatus>();
+  const getAccountAuthStatus = sessionManager.getAccountAuthStatus;
+  if (!getAccountAuthStatus) {
+    return statusMap;
+  }
+  await Promise.all(
+    accounts.map(async (account) => {
+      try {
+        const status = await getAccountAuthStatus(account.alias, {
+          allowPrompt: false,
+        });
+        statusMap.set(account.alias, status);
+      } catch (err) {
+        statusMap.set(account.alias, {
+          status: "unknown",
+          reason: String(err),
+        });
+      }
+    })
+  );
+  return statusMap;
+}
+
+function buildAccountSummaryLine(
+  account: { alias: string; site: string; cloudId: string },
+  status: AccountAuthStatus | undefined
+) {
+  const authLabel = status ? `auth: ${status.status}` : "auth: unknown";
+  return `${account.alias}: ${account.site} (cloudId: ${account.cloudId}, ${authLabel})`;
+}
+
+async function collectToolsForAccount(
+  sessionManager: SessionManagerLike,
+  account: { alias: string }
+) {
+  const session = sessionManager.getSession(account.alias);
+  if (!session) {
+    return null;
+  }
+  if (sessionManager.getAccountAuthStatus) {
+    const status = await sessionManager.getAccountAuthStatus(account.alias, {
+      allowPrompt: false,
+    });
+    if (status.status !== "ok") {
+      warn(
+        `[${account.alias}] Skipping tool discovery (auth ${status.status}).`
+      );
+      return null;
+    }
+  }
+  return session.listTools();
+}
+
+async function loadRemoteTools(
+  sessionManager: SessionManagerLike,
+  accounts: Array<{ alias: string }>
+) {
+  const toolMap = new Map<string, ToolConfig>();
+  const toolErrors: string[] = [];
+  for (const account of accounts) {
+    try {
+      const tools = await collectToolsForAccount(sessionManager, account);
+      if (!tools) {
+        continue;
+      }
+      for (const tool of tools) {
+        if (!toolMap.has(tool.name)) {
+          toolMap.set(tool.name, {
+            description: tool.description,
+            inputSchema: tool.inputSchema,
+          });
+        }
+      }
+    } catch (err) {
+      const message = `[${account.alias}] Failed to fetch tools during startup: ${String(
+        err
+      )}`;
+      toolErrors.push(message);
+      warn(message);
+    }
+  }
+  return { toolMap, toolErrors };
+}
+
+function buildToolDescription(tool: ToolConfig) {
+  const required = tool.inputSchema?.required ?? [];
+  const requiredHintList = required.filter((item) => item !== "cloudId");
+  const requiredHint =
+    requiredHintList.length > 0
+      ? `Required parameters: ${requiredHintList.join(", ")}.`
+      : "";
+  return (
+    (tool.description ? `${tool.description}\n\n` : "") +
+    "Required parameter: account (account alias).\n" +
+    requiredHint
+  );
+}
+
+function splitAccountArgs(args: Record<string, unknown>) {
+  const { account, ...rest } = args as Record<string, unknown> & {
+    account?: string;
+  };
+  return { account, rest };
+}
+
+function applyCloudIdFallback(
+  sessionManager: SessionManagerLike,
+  account: string,
+  tool: ToolConfig,
+  args: Record<string, unknown>
+) {
+  const requiredParams = tool.inputSchema?.required ?? [];
+  if (!requiredParams.includes("cloudId") || args.cloudId !== undefined) {
+    return;
+  }
+  const accountInfo = sessionManager
+    .listAccounts()
+    .find((item) => item.alias === account);
+  if (accountInfo?.cloudId && accountInfo.cloudId !== "unknown") {
+    args.cloudId = accountInfo.cloudId;
+  }
+}
+
+function createToolHandler(
+  sessionManager: SessionManagerLike,
+  toolName: string,
+  tool: ToolConfig
+) {
+  return async (args: Record<string, unknown>) => {
+    const { account, rest } = splitAccountArgs(args);
+    if (!account) {
+      return toolError("Missing required parameter: account");
+    }
+    const session = sessionManager.getSession(account);
+    if (!session) {
+      return toolError(`Unknown account alias: ${account}`);
+    }
+    applyCloudIdFallback(sessionManager, account, tool, rest);
+    try {
+      const result = await session.callTool(toolName, rest);
+      return normalizeToolResult(result);
+    } catch (err) {
+      return toolError(
+        `Failed to call ${toolName} for ${account}: ${String(err)}`
+      );
+    }
   };
 }
 
@@ -148,31 +309,11 @@ export async function startLocalServer(
     },
     async () => {
       const accounts = sessionManager.listAccounts();
-      const statusMap = new Map<string, { status: string; reason?: string }>();
-      if (sessionManager.getAccountAuthStatus) {
-        await Promise.all(
-          accounts.map(async (account) => {
-            try {
-              const status = await sessionManager.getAccountAuthStatus?.(
-                account.alias,
-                { allowPrompt: false }
-              );
-              statusMap.set(account.alias, status);
-            } catch (err) {
-              statusMap.set(account.alias, {
-                status: "unknown",
-                reason: String(err),
-              });
-            }
-          })
-        );
-      }
+      const statusMap = await buildAccountStatusMap(sessionManager, accounts);
       const summary = accounts
-        .map((account) => {
-          const status = statusMap.get(account.alias);
-          const authLabel = status ? `auth: ${status.status}` : "auth: unknown";
-          return `${account.alias}: ${account.site} (cloudId: ${account.cloudId}, ${authLabel})`;
-        })
+        .map((account) =>
+          buildAccountSummaryLine(account, statusMap.get(account.alias))
+        )
         .join("\n");
       return {
         content: [
@@ -192,105 +333,23 @@ export async function startLocalServer(
   );
 
   const sessions = sessionManager.listAccounts();
-  const toolMap = new Map<
-    string,
-    {
-      description?: string;
-      inputSchema?: {
-        type?: string;
-        properties?: Record<string, object>;
-        required?: string[];
-      };
-    }
-  >();
-  const toolErrors: string[] = [];
-
-  for (const account of sessions) {
-    const session = sessionManager.getSession(account.alias);
-    if (!session) {
-      continue;
-    }
-    try {
-      if (sessionManager.getAccountAuthStatus) {
-        const status = await sessionManager.getAccountAuthStatus(
-          account.alias,
-          { allowPrompt: false }
-        );
-        if (status.status !== "ok") {
-          warn(
-            `[${account.alias}] Skipping tool discovery (auth ${status.status}).`
-          );
-          continue;
-        }
-      }
-      const tools = await session.listTools();
-      for (const tool of tools) {
-        if (!toolMap.has(tool.name)) {
-          toolMap.set(tool.name, {
-            description: tool.description,
-            inputSchema: tool.inputSchema,
-          });
-        }
-      }
-    } catch (err) {
-      const message = `[${account.alias}] Failed to fetch tools during startup: ${String(
-        err
-      )}`;
-      toolErrors.push(message);
-      warn(message);
-    }
-  }
+  const { toolMap, toolErrors } = await loadRemoteTools(
+    sessionManager,
+    sessions
+  );
 
   if (toolMap.size === 0 && sessions.length > 0) {
     warn(`No remote tools could be loaded. ${toolErrors.join(" ")}`.trim());
   }
 
   for (const [toolName, tool] of toolMap) {
-    const required = tool.inputSchema?.required ?? [];
-    const requiredHintList = required.filter((item) => item !== "cloudId");
-    const requiredHint =
-      requiredHintList.length > 0
-        ? `Required parameters: ${requiredHintList.join(", ")}.`
-        : "";
-    const description =
-      (tool.description ? `${tool.description}\n\n` : "") +
-      "Required parameter: account (account alias).\n" +
-      requiredHint;
     server.registerTool(
       toolName,
       {
-        description,
+        description: buildToolDescription(tool),
         inputSchema: buildToolSchema(tool.inputSchema),
       },
-      async (args: Record<string, unknown>) => {
-        const { account, ...rest } = args as Record<string, unknown> & {
-          account?: string;
-        };
-        if (!account) {
-          return toolError("Missing required parameter: account");
-        }
-        const session = sessionManager.getSession(account);
-        if (!session) {
-          return toolError(`Unknown account alias: ${account}`);
-        }
-        const requiredParams = tool.inputSchema?.required ?? [];
-        if (requiredParams.includes("cloudId") && rest.cloudId === undefined) {
-          const accountInfo = sessionManager
-            .listAccounts()
-            .find((item) => item.alias === account);
-          if (accountInfo?.cloudId && accountInfo.cloudId !== "unknown") {
-            rest.cloudId = accountInfo.cloudId;
-          }
-        }
-        try {
-          const result = await session.callTool(toolName, rest);
-          return normalizeToolResult(result);
-        } catch (err) {
-          return toolError(
-            `Failed to call ${toolName} for ${account}: ${String(err)}`
-          );
-        }
-      }
+      createToolHandler(sessionManager, toolName, tool)
     );
   }
 

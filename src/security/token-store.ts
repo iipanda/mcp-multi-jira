@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { password as promptPassword } from "@inquirer/prompts";
+import PQueue from "p-queue";
 import { plainTokenFilePath, tokenFilePath } from "../config/paths.js";
 import type { AuthStatus, TokenSet, TokenStoreKind } from "../types.js";
 import { atomicWrite, ensureDir } from "../utils/fs.js";
@@ -16,6 +17,7 @@ const SERVICE_NAME = "mcp-jira";
 const TOKEN_ENV = "MCP_JIRA_TOKEN_PASSWORD";
 
 let cachedPassword: string | null = null;
+const fileStoreQueue = new PQueue({ concurrency: 1 });
 
 async function getMasterPassword(intent: "read" | "write") {
   if (cachedPassword !== null) {
@@ -127,19 +129,23 @@ class EncryptedFileTokenStore implements TokenStore {
   }
 
   async set(alias: string, tokens: TokenSet) {
-    const password = await getMasterPassword("write");
-    const existing = await loadEncryptedFile(password);
-    existing[alias] = tokens;
-    await saveEncryptedFile(password, existing);
+    await fileStoreQueue.add(async () => {
+      const password = await getMasterPassword("write");
+      const existing = await loadEncryptedFile(password);
+      existing[alias] = tokens;
+      await saveEncryptedFile(password, existing);
+    });
   }
 
   async remove(alias: string) {
-    const password = await getMasterPassword("read");
-    const existing = await loadEncryptedFile(password);
-    if (existing[alias]) {
-      delete existing[alias];
-      await saveEncryptedFile(password, existing);
-    }
+    await fileStoreQueue.add(async () => {
+      const password = await getMasterPassword("read");
+      const existing = await loadEncryptedFile(password);
+      if (existing[alias]) {
+        delete existing[alias];
+        await saveEncryptedFile(password, existing);
+      }
+    });
   }
 }
 
@@ -150,22 +156,30 @@ class PlaintextTokenStore implements TokenStore {
   }
 
   async set(alias: string, tokens: TokenSet) {
-    const existing = await loadPlainFile();
-    existing[alias] = tokens;
-    await savePlainFile(existing);
+    await fileStoreQueue.add(async () => {
+      const existing = await loadPlainFile();
+      existing[alias] = tokens;
+      await savePlainFile(existing);
+    });
   }
 
   async remove(alias: string) {
-    const existing = await loadPlainFile();
-    if (existing[alias]) {
-      delete existing[alias];
-      await savePlainFile(existing);
-    }
+    await fileStoreQueue.add(async () => {
+      const existing = await loadPlainFile();
+      if (existing[alias]) {
+        delete existing[alias];
+        await savePlainFile(existing);
+      }
+    });
   }
 }
 
 class KeytarTokenStore implements TokenStore {
-  constructor(private readonly keytar: typeof import("keytar")) {}
+  private readonly keytar: typeof import("keytar");
+
+  constructor(keytar: typeof import("keytar")) {
+    this.keytar = keytar;
+  }
 
   async get(alias: string) {
     const raw = await this.keytar.getPassword(SERVICE_NAME, `tokens:${alias}`);
