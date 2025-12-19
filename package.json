@@ -2,6 +2,7 @@
   "name": "mcp-multi-jira",
   "version": "0.1.0",
   "description": "Multi-account Jira MCP server",
+  "license": "MIT",
   "keywords": [
     "mcp",
     "model-context-protocol",
