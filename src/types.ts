@@ -9,6 +9,7 @@ export type AccountConfig = {
 export type TokenSet = {
   accessToken: string;
   refreshToken?: string;
+  refreshInvalid?: boolean;
   expiresAt: number;
   scopes: string[];
   tokenType?: string;
@@ -17,7 +18,7 @@ export type TokenSet = {
 export type TokenStoreKind = "encrypted" | "plain" | "keychain";
 
 export type AuthStatus = {
-  status: "ok" | "missing" | "expired" | "locked";
+  status: "ok" | "missing" | "expired" | "locked" | "invalid";
   reason?: string;
 };
 

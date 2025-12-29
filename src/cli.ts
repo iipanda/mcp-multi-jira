@@ -17,13 +17,21 @@ import type { ToolDefinition } from "./mcp/types.js";
 import {
   DEFAULT_SCOPES,
   getStaticClientInfoFromEnv,
+  isInvalidGrantError,
   loginWithDynamicOAuth,
+  refreshTokensIfNeeded,
 } from "./oauth/atlassian.js";
 import {
   createTokenStore,
   getAuthStatusForAlias,
+  type TokenStore,
 } from "./security/token-store.js";
-import type { AccountConfig, AuthStatus, TokenStoreKind } from "./types.js";
+import type {
+  AccountConfig,
+  AuthStatus,
+  TokenSet,
+  TokenStoreKind,
+} from "./types.js";
 import { info, setLogTarget, warn } from "./utils/log.js";
 import { PACKAGE_VERSION } from "./version.js";
 
@@ -172,10 +180,71 @@ function formatAuthStatus(status: AuthStatus): string {
       return "needs login";
     case "expired":
       return "expired";
+    case "invalid":
+      return "needs relogin";
     case "locked":
       return "locked";
     default:
       return "unknown";
+  }
+}
+
+function shouldVerifyRefresh(tokens: TokenSet | null) {
+  if (!tokens || tokens.refreshInvalid) {
+    return false;
+  }
+  if (!tokens.refreshToken) {
+    return false;
+  }
+  return tokens.expiresAt < Date.now() + 5 * 60 * 1000;
+}
+
+async function resolveAuthStatusForList(options: {
+  alias: string;
+  tokenStore: TokenStore;
+  storeKind: TokenStoreKind;
+  allowPrompt: boolean;
+  scopes: string[];
+  staticClientInfo: ReturnType<typeof getStaticClientInfoFromEnv>;
+}): Promise<AuthStatus> {
+  const status = await getAuthStatusForAlias({
+    alias: options.alias,
+    tokenStore: options.tokenStore,
+    storeKind: options.storeKind,
+    allowPrompt: options.allowPrompt,
+  });
+
+  if (status.status !== "ok") {
+    return status;
+  }
+
+  const tokens = await options.tokenStore.get(options.alias);
+  if (!shouldVerifyRefresh(tokens)) {
+    return status;
+  }
+
+  try {
+    await refreshTokensIfNeeded({
+      alias: options.alias,
+      tokenStore: options.tokenStore,
+      scopes: options.scopes,
+      staticClientInfo: options.staticClientInfo,
+    });
+    return status;
+  } catch (err) {
+    if (tokens && isInvalidGrantError(err)) {
+      await options.tokenStore.set(options.alias, {
+        ...tokens,
+        refreshInvalid: true,
+      });
+      return {
+        status: "invalid",
+        reason: `Stored refresh token is invalid. Run \`mcp-multi-jira login ${options.alias}\` to reauthenticate this account.`,
+      };
+    }
+
+    warn(`Failed to refresh tokens for ${options.alias}: ${String(err)}`);
+    return status;
   }
 }
 
@@ -472,14 +541,18 @@ async function handleListAccounts() {
   }
   const storeKind = resolveTokenStoreFromConfig(config);
   const tokenStore = await createTokenStore({ store: storeKind });
+  const scopes = resolveScopes();
+  const staticClientInfo = getStaticClientInfoFromEnv();
   const statusMap = new Map<string, string>();
   for (const account of accounts) {
     try {
-      const status = await getAuthStatusForAlias({
+      const status = await resolveAuthStatusForList({
         alias: account.alias,
         tokenStore,
         storeKind,
         allowPrompt: process.stdin.isTTY,
+        scopes,
+        staticClientInfo,
       });
       statusMap.set(account.alias, formatAuthStatus(status));
     } catch (err) {
@@ -538,6 +611,7 @@ async function handleServe(options: {
     return;
   }
   await manager.connectAll();
+  manager.startBackgroundRefresh();
   await startLocalServer(manager, PACKAGE_VERSION);
 }
 

@@ -236,6 +236,12 @@ export async function getAuthStatusForAlias(options: {
       reason: "No tokens found. Run login to authenticate this account.",
     };
   }
+  if (tokens.refreshInvalid) {
+    return {
+      status: "invalid",
+      reason: `Stored refresh token is invalid. Run \`mcp-multi-jira login ${options.alias}\` to reauthenticate this account.`,
+    };
+  }
   if (tokens.expiresAt < Date.now() && !tokens.refreshToken) {
     return {
       status: "expired",

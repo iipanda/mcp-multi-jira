@@ -8,6 +8,20 @@ import { warn } from "../utils/log.js";
 import { RemoteSession } from "./remote-session.js";
 import type { SessionManagerLike } from "./types.js";
 
+const DEFAULT_BACKGROUND_REFRESH_INTERVAL_MS = 60_000;
+
+function resolveBackgroundRefreshIntervalMs() {
+  const raw = process.env.MCP_JIRA_BACKGROUND_REFRESH_INTERVAL_MS;
+  if (!raw) {
+    return DEFAULT_BACKGROUND_REFRESH_INTERVAL_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return 0;
+  }
+  return Math.floor(parsed);
+}
+
 export class SessionManager implements SessionManagerLike {
   private readonly tokenStore: TokenStore;
   private readonly scopes: string[];
@@ -18,6 +32,9 @@ export class SessionManager implements SessionManagerLike {
   private readonly tokenStoreKind: TokenStoreKind;
   private readonly sessions = new Map<string, RemoteSession>();
   private accounts = new Map<string, AccountConfig>();
+  private backgroundRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+  private backgroundRefreshRunning = false;
+  private backgroundRefreshStopped = false;
 
   constructor(
     tokenStore: TokenStore,
@@ -96,7 +113,73 @@ export class SessionManager implements SessionManagerLike {
     });
   }
 
+  private async refreshAllTokensOnce() {
+    for (const session of this.sessions.values()) {
+      try {
+        const status = await this.getAccountAuthStatus(session.account.alias, {
+          allowPrompt: false,
+        });
+        if (status.status !== "ok") {
+          continue;
+        }
+        await session.refreshTokensInBackground();
+      } catch (err) {
+        warn(
+          `[${session.account.alias}] Background token refresh failed: ${String(
+            err
+          )}`
+        );
+      }
+    }
+  }
+
+  startBackgroundRefresh(options?: { intervalMs?: number }) {
+    if (this.backgroundRefreshTimer) {
+      return;
+    }
+    const intervalMs =
+      options?.intervalMs ?? resolveBackgroundRefreshIntervalMs();
+    if (intervalMs <= 0) {
+      return;
+    }
+    this.backgroundRefreshStopped = false;
+
+    const schedule = (delay: number) => {
+      const timer = setTimeout(run, delay);
+      timer.unref?.();
+      this.backgroundRefreshTimer = timer;
+    };
+
+    const run = async () => {
+      if (this.backgroundRefreshStopped) {
+        return;
+      }
+      if (this.backgroundRefreshRunning) {
+        schedule(intervalMs);
+        return;
+      }
+      this.backgroundRefreshRunning = true;
+      try {
+        await this.refreshAllTokensOnce();
+      } finally {
+        this.backgroundRefreshRunning = false;
+        schedule(intervalMs);
+      }
+    };
+
+    schedule(intervalMs);
+  }
+
+  stopBackgroundRefresh() {
+    this.backgroundRefreshStopped = true;
+    if (this.backgroundRefreshTimer) {
+      clearTimeout(this.backgroundRefreshTimer);
+      this.backgroundRefreshTimer = null;
+    }
+  }
+
   async closeAll() {
+    this.stopBackgroundRefresh();
     await Promise.all(
       Array.from(this.sessions.values()).map((session) => session.close())
     );

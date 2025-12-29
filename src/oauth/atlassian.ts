@@ -1,5 +1,6 @@
 import crypto from "node:crypto";
 import http from "node:http";
+import type { Socket } from "node:net";
 import { URL } from "node:url";
 import {
   auth,
@@ -55,6 +56,20 @@ export function getStaticClientInfoFromEnv(options?: {
     return null;
   }
   return { clientId, clientSecret };
+}
+
+export function isInvalidGrantError(err: unknown) {
+  if (!err || typeof err !== "object") {
+    return false;
+  }
+  const name = (err as { name?: unknown }).name;
+  if (name === "InvalidGrantError") {
+    return true;
+  }
+  const message = String(err).toLowerCase();
+  return (
+    message.includes("invalidgranterror") || message.includes("invalid_grant")
+  );
 }
 
 function toTokenSet(tokens: OAuthTokens, fallbackScopes: string[]): TokenSet {
@@ -203,11 +218,53 @@ export class LocalOAuthProvider implements OAuthClientProvider {
   }
 }
 
-export async function startCallbackServer(expectedState: string) {
-  const port = await getPort({ port: 3334 });
-  const redirectUri = `http://127.0.0.1:${port}/oauth/callback`;
+function extractRedirectUriFromClientInfo(
+  clientInfo: OAuthClientInformationMixed | null | undefined
+) {
+  if (!clientInfo || typeof clientInfo !== "object") {
+    return;
+  }
+  const redirectUris = (clientInfo as Record<string, unknown>).redirect_uris;
+  if (!Array.isArray(redirectUris)) {
+    return;
+  }
+  const first = redirectUris[0];
+  if (typeof first !== "string" || first.length === 0) {
+    return;
+  }
+  return first;
+}
+
+export async function startCallbackServer(
+  expectedState: string,
+  options?: { redirectUri?: string }
+) {
+  let redirectUri = options?.redirectUri;
+  if (!redirectUri) {
+    const port = await getPort({ port: 3334 });
+    redirectUri = `http://127.0.0.1:${port}/oauth/callback`;
+  }
+  const redirectUrl = new URL(redirectUri);
+  if (redirectUrl.protocol !== "http:") {
+    throw new Error(`Invalid redirect URI protocol: ${redirectUri}`);
+  }
+  if (redirectUrl.pathname !== "/oauth/callback") {
+    throw new Error(`Invalid redirect URI path: ${redirectUri}`);
+  }
+  const port = Number(redirectUrl.port);
+  if (!port || Number.isNaN(port)) {
+    throw new Error(
+      `Redirect URI must include an explicit port (e.g. http://127.0.0.1:3334/oauth/callback), got: ${redirectUri}`
+    );
+  }
+  const hostname = redirectUrl.hostname;
   const server = http.createServer();
   let closed = false;
+  const sockets = new Set<Socket>();
+  server.on("connection", (socket) => {
+    sockets.add(socket);
+    socket.on("close", () => sockets.delete(socket));
+  });
   const close = () =>
     new Promise<void>((resolve) => {
       if (closed) {
@@ -215,6 +272,9 @@ export async function startCallbackServer(expectedState: string) {
         return;
       }
       closed = true;
+      for (const socket of sockets) {
+        socket.destroy();
+      }
       server.close(() => resolve());
     });
   const codePromise = new Promise<string>((resolve, reject) => {
@@ -234,7 +294,10 @@ export async function startCallbackServer(expectedState: string) {
           reject(new Error("Invalid OAuth response"));
           return;
         }
-        res.writeHead(200, { "content-type": "text/plain" });
+        res.writeHead(200, {
+          "content-type": "text/plain",
+          connection: "close",
+        });
         res.end("Authentication complete. You can return to the CLI.");
         resolve(code);
       } catch (err) {
@@ -247,8 +310,23 @@ export async function startCallbackServer(expectedState: string) {
     });
   });
 
-  await new Promise<void>((resolve) => {
-    server.listen(port, "127.0.0.1", () => resolve());
+  await new Promise<void>((resolve, reject) => {
+    const onError = (err: unknown) => {
+      reject(err);
+    };
+    server.once("error", onError);
+    server.listen(port, hostname, () => {
+      server.off("error", onError);
+      resolve();
+    });
+  }).catch((err: unknown) => {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === "EADDRINUSE") {
+      throw new Error(
+        `OAuth callback port ${port} is already in use (redirect URI: ${redirectUri}). Close the other process using it and retry.`
+      );
+    }
+    throw err;
   });
 
   return { redirectUri, codePromise, close };
@@ -267,11 +345,23 @@ export async function loginWithDynamicOAuth(options: {
     allowRedirect: true,
     staticClientInfo: options.staticClientInfo,
   });
-  const { redirectUri, codePromise, close } = await startCallbackServer(
-    provider.getState()
-  );
+  const redirectUriFromEnv = process.env.MCP_JIRA_REDIRECT_URI;
+  let redirectUri = redirectUriFromEnv;
+  if (!redirectUri) {
+    if (options.staticClientInfo) {
+      redirectUri = "http://127.0.0.1:3334/oauth/callback";
+    } else {
+      const clientInfo = await provider.clientInformation();
+      redirectUri = extractRedirectUriFromClientInfo(clientInfo);
+    }
+  }
+  const {
+    redirectUri: callbackRedirectUri,
+    codePromise,
+    close,
+  } = await startCallbackServer(provider.getState(), { redirectUri });
   try {
-    provider.setRedirectUrl(redirectUri);
+    provider.setRedirectUrl(callbackRedirectUri);
     const result = await auth(provider, {
       serverUrl: MCP_SERVER_URL,
       scope: options.scopes.join(" "),

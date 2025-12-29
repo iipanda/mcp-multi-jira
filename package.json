@@ -1,6 +1,6 @@
 {
   "name": "mcp-multi-jira",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Multi-account Jira MCP server",
   "license": "MIT",
   "homepage": "https://github.com/iipanda/mcp-multi-jira#readme",

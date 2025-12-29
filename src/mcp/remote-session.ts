@@ -4,6 +4,7 @@ import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/
 import type { EventSourceInit } from "eventsource";
 import PQueue from "p-queue";
 import {
+  isInvalidGrantError,
   MCP_SERVER_URL,
   MCP_SSE_URL,
   refreshTokensIfNeeded,
@@ -71,20 +72,75 @@ export class RemoteSession {
     await this.loadPromise;
   }
 
+  private async fetchRefreshedTokens() {
+    const alias = this.account.alias;
+    const refreshed = await refreshTokensIfNeeded({
+      alias,
+      tokenStore: this.tokenStore,
+      scopes: this.scopes,
+      staticClientInfo: this.staticClientInfo,
+    });
+    this.tokens = refreshed;
+    return refreshed;
+  }
+
+  private async markRefreshTokenInvalid() {
+    if (!this.tokens || this.tokens.refreshInvalid) {
+      return;
+    }
+    const marked = { ...this.tokens, refreshInvalid: true };
+    await this.tokenStore.set(this.account.alias, marked);
+    this.tokens = marked;
+  }
+
+  private async retryRefreshAfterReload(previousRefreshToken?: string) {
+    const alias = this.account.alias;
+    const latest = await this.tokenStore.get(alias);
+    if (!latest?.refreshToken) {
+      return null;
+    }
+    if (latest.refreshToken === previousRefreshToken) {
+      return null;
+    }
+    this.tokens = latest;
+    try {
+      return await this.fetchRefreshedTokens();
+    } catch (err) {
+      if (!isInvalidGrantError(err)) {
+        throw err;
+      }
+      return null;
+    }
+  }
+
+  private async refreshTokensInner() {
+    const alias = this.account.alias;
+    const currentRefreshToken = this.tokens?.refreshToken;
+
+    try {
+      return await this.fetchRefreshedTokens();
+    } catch (err) {
+      if (!isInvalidGrantError(err)) {
+        throw err;
+      }
+
+      const refreshed = await this.retryRefreshAfterReload(currentRefreshToken);
+      if (refreshed) {
+        return refreshed;
+      }
+
+      await this.markRefreshTokenInvalid();
+      throw new Error(
+        `Stored refresh token is invalid for account ${alias}. Run \`mcp-multi-jira login ${alias}\` again.`
+      );
+    }
+  }
+
   private refreshTokens() {
     if (this.refreshPromise) {
       return this.refreshPromise;
     }
-    this.refreshPromise = (async () => {
-      const refreshed = await refreshTokensIfNeeded({
-        alias: this.account.alias,
-        tokenStore: this.tokenStore,
-        scopes: this.scopes,
-        staticClientInfo: this.staticClientInfo,
-      });
-      this.tokens = refreshed;
-      return refreshed;
-    })().finally(() => {
+    this.refreshPromise = this.refreshTokensInner().finally(() => {
       this.refreshPromise = null;
     });
     return this.refreshPromise;
@@ -100,15 +156,44 @@ export class RemoteSession {
 
   private async ensureValidTokens() {
     await this.ensureTokensLoaded();
+
+    if (!this.tokens) {
+      throw new Error("Missing tokens");
+    }
+
+    const now = Date.now();
+    if (this.tokens.refreshInvalid) {
+      if (this.tokens.expiresAt > now) {
+        return;
+      }
+      throw new Error(
+        `Tokens for ${this.account.alias} have expired and the stored refresh token is invalid. Run login again.`
+      );
+    }
+
     if (!this.tokenNeedsRefresh()) {
       return;
     }
-    if (!this.tokens?.refreshToken) {
+    if (!this.tokens.refreshToken) {
       throw new Error(
         `Tokens for ${this.account.alias} have expired and no refresh token is available.`
       );
     }
-    await this.refreshTokens();
+
+    if (this.tokens.expiresAt <= now) {
+      await this.refreshTokens();
+      return;
+    }
+
+    try {
+      await this.refreshTokens();
+    } catch (err) {
+      warn(
+        `[${this.account.alias}] Token refresh failed, continuing with existing access token: ${String(
+          err
+        )}`
+      );
+    }
   }
 
   private async connectStreamableHttp() {
@@ -229,6 +314,36 @@ export class RemoteSession {
         throw err;
       }
     });
+  }
+
+  async refreshTokensInBackground() {
+    await this.ensureTokensLoaded();
+    if (!this.tokens) {
+      throw new Error("Missing tokens");
+    }
+    if (this.tokens.refreshInvalid) {
+      return;
+    }
+    if (!this.tokenNeedsRefresh()) {
+      return;
+    }
+    if (!this.tokens.refreshToken) {
+      return;
+    }
+    try {
+      await this.refreshTokens();
+    } catch (err) {
+      const now = Date.now();
+      if (this.tokens.expiresAt > now) {
+        warn(
+          `[${this.account.alias}] Background token refresh failed, continuing with existing access token: ${String(
+            err
+          )}`
+        );
+        return;
+      }
+      throw err;
+    }
   }
 
   async close() {
