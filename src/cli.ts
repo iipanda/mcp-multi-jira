@@ -465,6 +465,7 @@ async function handleLogin(
   }
 ) {
   const config = await loadConfig();
+  const existingAccount = Boolean(config.accounts[alias]);
   if (config.accounts[alias]) {
     const overwrite = await confirm({
       message: `Account alias "${alias}" already exists. Re-authenticate and overwrite?`,
@@ -481,6 +482,9 @@ async function handleLogin(
   const tokenStore = await createTokenStore({
     store: tokenStoreKind,
   });
+  if (existingAccount) {
+    await tokenStore.remove(alias);
+  }
   const staticClientInfo = getStaticClientInfoFromEnv(options);
   await loginWithDynamicOAuth({
     alias,

@@ -34,6 +34,18 @@ export async function readClientInfo(
   }
 }
 
+export async function deleteClientInfo(serverUrl: string) {
+  const filePath = clientInfoPath(serverUrl);
+  try {
+    await fs.unlink(filePath);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") {
+      return;
+    }
+    throw err;
+  }
+}
+
 export async function writeClientInfo(
   serverUrl: string,
   info: OAuthClientInformationMixed

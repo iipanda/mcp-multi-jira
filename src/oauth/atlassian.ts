@@ -21,7 +21,11 @@ import type { z } from "zod";
 import type { TokenStore } from "../security/token-store.js";
 import type { TokenSet } from "../types.js";
 import { debug, info, warn } from "../utils/log.js";
-import { readClientInfo, writeClientInfo } from "./client-info-store.js";
+import {
+  deleteClientInfo,
+  readClientInfo,
+  writeClientInfo,
+} from "./client-info-store.js";
 
 export const DEFAULT_SCOPES = [
   "offline_access",
@@ -215,6 +219,21 @@ export class LocalOAuthProvider implements OAuthClientProvider {
       throw new Error("Missing OAuth code verifier.");
     }
     return this.codeVerifierValue;
+  }
+
+  async invalidateCredentials(scope: "all" | "client" | "tokens" | "verifier") {
+    if (scope === "verifier" || scope === "all") {
+      this.codeVerifierValue = undefined;
+    }
+
+    if (scope === "tokens" || scope === "all") {
+      await this.tokenStore.remove(this.alias);
+    }
+
+    if ((scope === "client" || scope === "all") && !this.staticClientInfo) {
+      this.clientInfoCache = null;
+      await deleteClientInfo(MCP_SERVER_URL);
+    }
   }
 }
 
